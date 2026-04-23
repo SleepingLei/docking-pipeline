@@ -308,10 +308,14 @@ import rdkit, pandas, sklearn
 print("dock-pipe imports ok")
 PY
   "${CONDA_EXE}" run -n unidock2 unidock2 --version || true
-  "${CONDA_EXE}" run -n unimol-v2 python - <<'PY' || true
+  if conda_env_exists unimol-v2; then
+    "${CONDA_EXE}" run -n unimol-v2 python - <<'PY' || true
 import torch
 print("torch", torch.__version__, "cuda available", torch.cuda.is_available())
 PY
+  else
+    echo "unimol-v2 env not installed yet"
+  fi
   "${BIN_DIR}/gnina" --version || true
 }
 
