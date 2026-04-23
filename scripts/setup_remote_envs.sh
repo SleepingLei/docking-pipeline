@@ -208,19 +208,26 @@ PY
   gnina_name="$(cat "${gnina_name_file}")"
   download_path="${BIN_DIR}/${gnina_name}"
 
-  echo "Downloading ${gnina_name} from ${gnina_url}"
-  if command_exists curl; then
-    curl -L --retry 8 --retry-delay 5 --retry-all-errors \
-      --connect-timeout 30 --continue-at - \
-      -o "${download_path}" "${gnina_url}"
-  elif command_exists wget; then
-    wget --tries=8 --continue -O "${download_path}" "${gnina_url}"
+  if [[ -s "${BIN_DIR}/gnina.real" ]]; then
+    echo "Found existing ${BIN_DIR}/gnina.real; skipping gnina asset download."
+    download_path="${BIN_DIR}/gnina.real"
+  elif [[ -s "${download_path}" ]]; then
+    echo "Found existing ${download_path}; skipping gnina asset download."
   else
-    python - "${gnina_url}" "${download_path}" <<'PY'
+    echo "Downloading ${gnina_name} from ${gnina_url}"
+    if command_exists curl; then
+      curl -L --retry 8 --retry-delay 5 --retry-all-errors \
+        --connect-timeout 30 --continue-at - \
+        -o "${download_path}" "${gnina_url}"
+    elif command_exists wget; then
+      wget --tries=8 --continue -O "${download_path}" "${gnina_url}"
+    else
+      python - "${gnina_url}" "${download_path}" <<'PY'
 import sys
 import urllib.request
 urllib.request.urlretrieve(sys.argv[1], sys.argv[2])
 PY
+    fi
   fi
 
   python - "$BIN_DIR" "${download_path}" <<'PY'
@@ -235,7 +242,9 @@ download_path = Path(sys.argv[2])
 
 gnina_path = bin_dir / "gnina.real"
 
-if tarfile.is_tarfile(download_path):
+if download_path.resolve() == gnina_path.resolve():
+    pass
+elif tarfile.is_tarfile(download_path):
     extract_dir = bin_dir / f".extract_{download_path.stem}"
     extract_dir.mkdir(exist_ok=True)
     with tarfile.open(download_path) as tf:
