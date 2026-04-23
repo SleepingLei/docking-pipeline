@@ -233,7 +233,7 @@ from pathlib import Path
 bin_dir = Path(sys.argv[1])
 download_path = Path(sys.argv[2])
 
-gnina_path = bin_dir / "gnina"
+gnina_path = bin_dir / "gnina.real"
 
 if tarfile.is_tarfile(download_path):
     extract_dir = bin_dir / f".extract_{download_path.stem}"
@@ -260,6 +260,30 @@ mode = gnina_path.stat().st_mode
 gnina_path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 print(f"Installed {gnina_path}")
 PY
+
+  ensure_conda_shell
+  local solver_cmd
+  solver_cmd="$(solver)"
+  if ! conda_env_exists gnina-cuda; then
+    "${solver_cmd}" create -n gnina-cuda -c nvidia -c conda-forge \
+      cudnn cuda-version=12 -y
+  else
+    "${solver_cmd}" install -n gnina-cuda -c nvidia -c conda-forge \
+      cudnn cuda-version=12 -y
+  fi
+
+  local conda_base
+  local gnina_env_prefix
+  conda_base="$("${CONDA_EXE}" info --base)"
+  gnina_env_prefix="${conda_base}/envs/gnina-cuda"
+  cat > "${BIN_DIR}/gnina" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export LD_LIBRARY_PATH="${gnina_env_prefix}/lib:\${LD_LIBRARY_PATH:-}"
+exec "${BIN_DIR}/gnina.real" "\$@"
+EOF
+  chmod +x "${BIN_DIR}/gnina"
+
   "${BIN_DIR}/gnina" --version || true
 }
 
