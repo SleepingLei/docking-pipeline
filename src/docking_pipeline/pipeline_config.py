@@ -21,6 +21,38 @@ def _resolve_path(p: str | Path, *, base_dir: Path) -> Path:
     return (base_dir / p).resolve()
 
 
+def _expand_sdf_inputs(paths: list[Path]) -> list[Path]:
+    """
+    Expand inputs that can be:
+    - a file path
+    - a directory (we take *.sdf)
+    - a glob pattern (e.g. /path/to/*.sdf)
+    """
+    import glob
+
+    out: list[Path] = []
+    for p in paths:
+        s = str(p)
+        if any(ch in s for ch in ["*", "?", "["]):
+            matches = [Path(x) for x in glob.glob(s)]
+            out.extend(sorted(matches))
+            continue
+        if p.is_dir():
+            out.extend(sorted(p.glob("*.sdf")))
+            continue
+        out.append(p)
+    # de-dup while preserving order
+    seen: set[Path] = set()
+    uniq: list[Path] = []
+    for p in out:
+        rp = p.resolve()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        uniq.append(rp)
+    return uniq
+
+
 @dataclass(frozen=True)
 class DockingBox:
     center: tuple[float, float, float]
@@ -38,7 +70,7 @@ class RunSection:
 @dataclass(frozen=True)
 class InputsSection:
     receptor_pdb: Path
-    ligands_sdf: Path
+    ligands_sdf: list[Path]
     docking_box: DockingBox
 
 
@@ -174,7 +206,8 @@ def normalize_config(cfg: DockingPipelineConfig, *, config_path: Path) -> Dockin
         work_dir = (project_dir / work_dir).resolve()
 
     receptor_pdb = _resolve_path(cfg.inputs.receptor_pdb, base_dir=cfg_dir)
-    ligands_sdf = _resolve_path(cfg.inputs.ligands_sdf, base_dir=cfg_dir)
+    ligands_sdf = [_resolve_path(p, base_dir=cfg_dir) for p in cfg.inputs.ligands_sdf]
+    ligands_sdf = _expand_sdf_inputs(ligands_sdf)
 
     unimol_repo_dir = _resolve_path(cfg.unimol.repo_dir, base_dir=cfg_dir)
     unimol_model_path = _resolve_path(cfg.unimol.model_path, base_dir=cfg_dir)
@@ -250,7 +283,9 @@ def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
     )
     inputs = InputsSection(
         receptor_pdb=_as_path(inputs_d.get("receptor_pdb", "")),
-        ligands_sdf=_as_path(inputs_d.get("ligands_sdf", "")),
+        ligands_sdf=[
+            _as_path(x) for x in (inputs_d.get("ligands_sdf", []) if isinstance(inputs_d.get("ligands_sdf", []), list) else [inputs_d.get("ligands_sdf", "")])
+        ],
         docking_box=box,
     )
 

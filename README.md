@@ -78,3 +78,12 @@ conda run -n dock-pipe docking-pipeline run configs/test_0_9999.yaml --submit
 The printed block is the intended step-by-step workflow. This is by design: later array sizes depend on chunk files produced earlier.
 
 Note: this toolkit intentionally does not set `#SBATCH -t` (walltime) in generated scripts; it lets the cluster default/QOS decide.
+
+## Multiple SDF Inputs
+
+`inputs.ligands_sdf` supports:
+
+- a single SDF file path
+- a directory (we take `*.sdf`)
+- a glob pattern like `/data/project/hanwen/commercial/*.sdf`
+- a YAML list of SDF paths

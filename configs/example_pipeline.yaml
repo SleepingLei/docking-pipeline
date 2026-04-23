@@ -6,6 +6,7 @@ run:
 
 inputs:
   receptor_pdb: /absolute/path/to/protein.pdb
+  # Can be: a single SDF, a directory, a glob, or a list of SDFs.
   ligands_sdf: /absolute/path/to/ligands.sdf
   docking_box:
     center: [0.0, 0.0, 0.0]

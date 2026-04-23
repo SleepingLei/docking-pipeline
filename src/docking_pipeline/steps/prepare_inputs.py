@@ -61,46 +61,56 @@ def main() -> int:
             next_chunk_id += 1
 
     ligand_counter = 0
-    for src_idx, mol in _iter_sdf(cfg.inputs.ligands_sdf):
-        ligand_id = f"LIG_{ligand_counter:08d}"
-        ligand_counter += 1
+    input_sdfs = list(cfg.inputs.ligands_sdf)
+    if not input_sdfs:
+        raise ValueError("inputs.ligands_sdf is empty")
 
-        if mol is None:
+    for sdf_path in input_sdfs:
+        if not sdf_path.exists():
+            raise FileNotFoundError(sdf_path)
+        if not sdf_path.is_file():
+            raise ValueError(f"Not a file: {sdf_path}")
+
+        for src_idx, mol in _iter_sdf(sdf_path):
+            ligand_id = f"LIG_{ligand_counter:012d}"
+            ligand_counter += 1
+
+            if mol is None:
+                manifest_rows.append(
+                    {
+                        "ligand_id": ligand_id,
+                        "source_sdf": str(sdf_path),
+                        "source_mol_idx": src_idx,
+                        "status": "rdkit_none",
+                    }
+                )
+                continue
+
+            # Attach stable ID so Uni-Dock2 output SDF preserves it.
+            mol.SetProp("ligand_id", ligand_id)
+            if not mol.HasProp("_Name"):
+                mol.SetProp("_Name", ligand_id)
+
+            try:
+                smiles = Chem.MolToSmiles(mol, canonical=True)
+            except Exception:
+                smiles = ""
+
+            ensure_writer()
+            writer.write(mol)
+            in_chunk += 1
+
             manifest_rows.append(
                 {
                     "ligand_id": ligand_id,
-                    "source_sdf": str(cfg.inputs.ligands_sdf),
+                    "source_sdf": str(sdf_path),
                     "source_mol_idx": src_idx,
-                    "status": "rdkit_none",
+                    "prepared_chunk": int(current_chunk_id),
+                    "smiles": smiles,
+                    "name": mol.GetProp("_Name") if mol.HasProp("_Name") else "",
+                    "status": "ok",
                 }
             )
-            continue
-
-        # Attach stable ID so Uni-Dock2 output SDF preserves it.
-        mol.SetProp("ligand_id", ligand_id)
-        if not mol.HasProp("_Name"):
-            mol.SetProp("_Name", ligand_id)
-
-        try:
-            smiles = Chem.MolToSmiles(mol, canonical=True)
-        except Exception:
-            smiles = ""
-
-        ensure_writer()
-        writer.write(mol)
-        in_chunk += 1
-
-        manifest_rows.append(
-            {
-                "ligand_id": ligand_id,
-                "source_sdf": str(cfg.inputs.ligands_sdf),
-                "source_mol_idx": src_idx,
-                "prepared_chunk": int(current_chunk_id),
-                "smiles": smiles,
-                "name": mol.GetProp("_Name") if mol.HasProp("_Name") else "",
-                "status": "ok",
-            }
-        )
 
     if writer is None:
         raise RuntimeError("No valid ligands were written to any chunk; check input ligands SDF.")
