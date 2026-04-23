@@ -77,4 +77,4 @@ conda run -n dock-pipe docking-pipeline run configs/test_0_9999.yaml --submit
 
 The printed block is the intended step-by-step workflow. This is by design: later array sizes depend on chunk files produced earlier.
 
-If `sbatch` fails with `QOSMaxWallDurationPerJobLimit`, reduce `slurm.defaults.time` in your config (your account/QOS may cap max walltime per job).
+Note: this toolkit intentionally does not set `#SBATCH -t` (walltime) in generated scripts; it lets the cluster default/QOS decide.

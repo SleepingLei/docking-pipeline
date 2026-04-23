@@ -105,7 +105,8 @@ class GninaSection:
 
 @dataclass(frozen=True)
 class SlurmDefaults:
-    time: str = "24:00:00"
+    # If None, do not set `#SBATCH -t` and let the cluster default/QOS decide.
+    time: str | None = None
     cpus_per_task: int = 8
     mem: str = "32G"
 
@@ -315,6 +316,11 @@ def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
 
     sl_d = data.get("slurm") or {}
     defs_d = sl_d.get("defaults") or {}
+    time_raw = defs_d.get("time", None)
+    if time_raw is None:
+        time_val = None
+    else:
+        time_val = str(time_raw)
     slurm = SlurmSection(
         account=sl_d.get("account", None),
         cpu_partition=str(sl_d.get("cpu_partition", "normal")),
@@ -323,7 +329,7 @@ def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
         gpu_partition_unimol=str(sl_d.get("gpu_partition_unimol", "gpu_h100")),
         gpu_partition_gnina=str(sl_d.get("gpu_partition_gnina", "gpu_4090")),
         defaults=SlurmDefaults(
-            time=str(defs_d.get("time", "24:00:00")),
+            time=time_val,
             cpus_per_task=int(defs_d.get("cpus_per_task", 8)),
             mem=str(defs_d.get("mem", "32G")),
         ),
@@ -341,4 +347,3 @@ def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
     )
     _validate(cfg)
     return cfg
-
