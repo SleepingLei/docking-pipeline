@@ -115,6 +115,10 @@ create_unimol_v2() {
   "${CONDA_EXE}" run -n unimol-v2 python -m pip install \
     rdkit-pypi==2022.9.3 biopandas
 
+  # Uni-Core declares these as runtime deps; install explicitly to avoid legacy easy_install behavior.
+  "${CONDA_EXE}" run -n unimol-v2 python -m pip install \
+    ml_collections tensorboardX tokenizers wandb
+
   if [[ ! -d "${TOOLS_DIR}/Uni-Core/.git" ]]; then
     git clone https://github.com/dptech-corp/Uni-Core.git "${TOOLS_DIR}/Uni-Core"
   fi
@@ -124,7 +128,8 @@ create_unimol_v2() {
 
   (
     cd "${TOOLS_DIR}/Uni-Core"
-    "${CONDA_EXE}" run -n unimol-v2 python setup.py install --disable-cuda-ext
+    # Uni-Core disables CUDA extensions by default; use --enable-cuda-ext only when you intend to compile them.
+    "${CONDA_EXE}" run -n unimol-v2 python -m pip install --no-build-isolation --no-deps .
   )
 
   "${CONDA_EXE}" run -n unimol-v2 python - <<'PY'
