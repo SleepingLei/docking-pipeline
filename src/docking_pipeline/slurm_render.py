@@ -363,7 +363,9 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
         PREP_JOBID_FILE="$STATE_DIR/00_prepare_jobid.txt"
 
         # Idempotent: if prepare already ran and created chunk files, do not resubmit.
-        if compgen -G "$RUN_DIR/inputs/fast/chunks/chunk*.sdf" > /dev/null; then
+        if [[ "${{SKIP_PREPARE:-0}}" == "1" ]]; then
+          echo "[submit] 00_prepare_inputs (skipped; SKIP_PREPARE=1)"
+        elif compgen -G "$RUN_DIR/inputs/fast/chunks/chunk*.sdf" > /dev/null; then
           echo "[submit] 00_prepare_inputs (skipped; chunk files already exist)"
         elif [[ -f "$PREP_JOBID_FILE" ]]; then
           echo "[submit] 00_prepare_inputs (skipped; already submitted jobid=$(cat "$PREP_JOBID_FILE"))"
