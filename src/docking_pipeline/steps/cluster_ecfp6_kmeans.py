@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 from rdkit import Chem
+from rdkit import DataStructs
 from rdkit.Chem import AllChem
 from sklearn.cluster import KMeans
 
@@ -60,7 +61,7 @@ def main() -> int:
                 continue
             fp = AllChem.GetMorganFingerprintAsBitVect(mol, 3, nBits=2048)
             arr = np.zeros((2048,), dtype=np.uint8)
-            Chem.DataStructs.ConvertToNumpyArray(fp, arr)
+            DataStructs.ConvertToNumpyArray(fp, arr)
             lids.append(lid)
             fps.append(arr)
 
@@ -106,4 +107,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
