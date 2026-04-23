@@ -109,7 +109,7 @@ create_unimol_v2() {
 
   "${solver_cmd}" install -n unimol-v2 -c pytorch -c nvidia -c conda-forge \
     pytorch pytorch-cuda=12.1 \
-    'numpy<2' pandas scikit-learn tqdm pyyaml lmdb \
+    'numpy<2' pandas scikit-learn tqdm pyyaml python-lmdb sympy=1.13.1 \
     -y
 
   "${CONDA_EXE}" run -n unimol-v2 python -m pip install \
