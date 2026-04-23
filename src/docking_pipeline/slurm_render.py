@@ -344,6 +344,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
     )
 
     scripts["slurm/submit_workflow.sh"] = _render_submit_script(cfg, run_yaml_path=run_yaml_path)
+    scripts["slurm/submit_workflow_auto.sh"] = _render_submit_auto_script(cfg, run_yaml_path=run_yaml_path)
 
     return scripts
 
@@ -416,5 +417,184 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
         echo
         echo "Final output: $RUN_DIR/final/final_scores.csv"
         exit 0
+        """
+    )
+
+
+def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> str:
+    """
+    A best-effort "run everything" submission helper.
+
+    This runs on the login node and sequentially:
+    1) submits a job (optionally with SBATCH_TIME),
+    2) waits for completion,
+    3) derives next array sizes from generated files,
+    4) submits the next stage.
+
+    It is intentionally conservative to avoid "empty array" mistakes.
+    """
+    run_dir = cfg.run.work_dir
+    return textwrap.dedent(
+        f"""\
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        RUN_YAML="${{RUN_YAML:-{run_yaml_path}}}"
+        RUN_DIR="{run_dir}"
+
+        SBATCH_TIME="${{SBATCH_TIME:-}}"
+        SBATCH_ARGS=()
+        if [[ -n "$SBATCH_TIME" ]]; then
+          SBATCH_ARGS+=("-t" "$SBATCH_TIME")
+        fi
+
+        submit() {{
+          # Usage: submit <sbatch_path> [extra sbatch args...]
+          local script="$1"
+          shift
+          sbatch --parsable "${{SBATCH_ARGS[@]}}" "$@" "$script"
+        }}
+
+        wait_job() {{
+          # Wait until a job disappears from squeue, then check sacct state.
+          local jobid="$1"
+          while true; do
+            local q
+            q="$(squeue -h -j "$jobid" 2>/dev/null || true)"
+            if [[ -z "$q" ]]; then
+              break
+            fi
+            sleep 10
+          done
+
+          local state
+          state="$(sacct -j "$jobid" -n -o State 2>/dev/null | head -n1 | awk '{{print $1}}' || true)"
+          if [[ -z "$state" ]]; then
+            echo "[warn] sacct returned empty state for job $jobid; continuing" >&2
+            return 0
+          fi
+          if [[ "$state" == "COMPLETED" ]]; then
+            return 0
+          fi
+          echo "[error] job $jobid ended with state=$state" >&2
+          sacct -j "$jobid" --format=JobID,JobName%20,Partition,State,ExitCode,Elapsed,NodeList | head -n 20 >&2 || true
+          return 1
+        }}
+
+        cd "$RUN_DIR"
+
+        echo "[auto] 00_prepare_inputs"
+        if compgen -G "inputs/fast/chunks/chunk*.sdf" > /dev/null; then
+          echo "  skipped (fast chunks already exist)"
+        else
+          j0="$(submit "slurm/00_prepare_inputs.sbatch")"
+          echo "  jobid=$j0"
+          wait_job "$j0"
+        fi
+
+        echo "[auto] 10_unidock_fast_array"
+        n_fast="$(ls -1 inputs/fast/chunks/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "$n_fast" -lt 1 ]]; then
+          echo "[error] no fast chunks under inputs/fast/chunks" >&2
+          exit 2
+        fi
+        n_fast_sum="$(ls -1 unidock_fast/chunk_summaries/summary_*.csv 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "$n_fast_sum" -ge "$n_fast" ]]; then
+          echo "  skipped (fast summaries already exist: $n_fast_sum/$n_fast)"
+        else
+          j1="$(submit "slurm/10_unidock_fast_array.sbatch" --array=0-$((n_fast-1)))"
+          echo "  jobid=$j1"
+          wait_job "$j1"
+        fi
+
+        echo "[auto] 11_select_fast_top"
+        if compgen -G "inputs/balance/chunks/chunk*.sdf" > /dev/null; then
+          echo "  skipped (balance chunks already exist)"
+        else
+          j2="$(submit "slurm/11_select_fast_top.sbatch")"
+          echo "  jobid=$j2"
+          wait_job "$j2"
+        fi
+
+        echo "[auto] 20_unidock_balance_array"
+        n_bal="$(ls -1 inputs/balance/chunks/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "$n_bal" -lt 1 ]]; then
+          echo "[error] no balance chunks under inputs/balance/chunks" >&2
+          exit 2
+        fi
+        n_bal_sum="$(ls -1 unidock_balance/chunk_summaries/summary_*.csv 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "$n_bal_sum" -ge "$n_bal" ]]; then
+          echo "  skipped (balance summaries already exist: $n_bal_sum/$n_bal)"
+        else
+          j3="$(submit "slurm/20_unidock_balance_array.sbatch" --array=0-$((n_bal-1)))"
+          echo "  jobid=$j3"
+          wait_job "$j3"
+        fi
+
+        echo "[auto] 21_select_balance_top"
+        if compgen -G "inputs/detail/chunks/chunk*.sdf" > /dev/null; then
+          echo "  skipped (detail chunks already exist)"
+        else
+          j4="$(submit "slurm/21_select_balance_top.sbatch")"
+          echo "  jobid=$j4"
+          wait_job "$j4"
+        fi
+
+        echo "[auto] 30_unidock_detail_array"
+        n_det="$(ls -1 inputs/detail/chunks/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "$n_det" -lt 1 ]]; then
+          echo "[error] no detail chunks under inputs/detail/chunks" >&2
+          exit 2
+        fi
+        n_det_sum="$(ls -1 unidock_detail/chunk_summaries/summary_*.csv 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "$n_det_sum" -ge "$n_det" ]]; then
+          echo "  skipped (detail summaries already exist: $n_det_sum/$n_det)"
+        else
+          j5="$(submit "slurm/30_unidock_detail_array.sbatch" --array=0-$((n_det-1)))"
+          echo "  jobid=$j5"
+          wait_job "$j5"
+        fi
+
+        echo "[auto] 40_cluster_select"
+        if [[ -s "selection/cluster_reps/ligand_ids.txt" ]]; then
+          echo "  skipped (cluster reps already exist)"
+        else
+          j6="$(submit "slurm/40_cluster_select.sbatch")"
+          echo "  jobid=$j6"
+          wait_job "$j6"
+        fi
+
+        echo "[auto] 50_unimol_prepare"
+        if [[ -d "unimol/chunks" ]] && compgen -G "unimol/chunks/chunk_*/batch.csv" > /dev/null; then
+          echo "  skipped (unimol batch files already exist)"
+        else
+          j7="$(submit "slurm/50_unimol_prepare.sbatch")"
+          echo "  jobid=$j7"
+          wait_job "$j7"
+        fi
+
+        echo "[auto] 60_unimol_array"
+        n_um="$(ls -d unimol/chunks/chunk_* 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "$n_um" -lt 1 ]]; then
+          echo "[error] no unimol chunks under unimol/chunks" >&2
+          exit 2
+        fi
+        j8="$(submit "slurm/60_unimol_array.sbatch" --array=0-$((n_um-1)))"
+        echo "  jobid=$j8"
+        wait_job "$j8"
+
+        echo "[auto] 70_gnina_array"
+        j9="$(submit "slurm/70_gnina_array.sbatch" --array=0-$((n_um-1)))"
+        echo "  jobid=$j9"
+        wait_job "$j9"
+
+        echo "[auto] 80_finalize"
+        j10="$(submit "slurm/80_finalize.sbatch")"
+        echo "  jobid=$j10"
+        wait_job "$j10"
+
+        echo
+        echo "[auto] done"
+        echo "Final output: $RUN_DIR/final/final_scores.csv"
         """
     )

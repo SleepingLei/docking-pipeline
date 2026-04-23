@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Submit the generated Slurm workflow immediately with dependencies.",
     )
     run.add_argument(
+        "--submit-all",
+        action="store_true",
+        help="Submit and run the whole workflow sequentially (login-node helper script).",
+    )
+    run.add_argument(
         "--force",
         action="store_true",
         help="Allow using an existing work_dir and overwrite generated sbatch scripts.",
@@ -89,8 +94,14 @@ def main() -> int:
         print(f"Run dir: {run_dir}")
         if args.dry_run:
             return 0
+        if args.submit and args.submit_all:
+            parser.error("--submit and --submit-all are mutually exclusive")
         if args.submit:
             submit_run(run_dir)
+        if args.submit_all:
+            # Run the auto submit helper.
+            os.environ.setdefault("RUN_DIR", str(run_dir))
+            subprocess.run(["bash", str(run_dir / "slurm" / "submit_workflow_auto.sh")], check=True)
         return 0
     if args.command == "submit":
         submit_run(args.run_dir)
