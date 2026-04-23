@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.DS_Store
+
+remote_env_check_*/
+runs/
+logs/
+third_party/
+bin/
+models/*.pt
+models/*.pth
+models/*.ckpt

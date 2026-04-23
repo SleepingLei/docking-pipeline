@@ -1,0 +1,74 @@
+run:
+  name: example_screen
+  work_dir: runs/example_screen
+  project_dir: /data/project/hanwen/software/docking-pipeline
+  random_seed: 1234567
+
+inputs:
+  receptor_pdb: /absolute/path/to/protein.pdb
+  ligands_sdf: /absolute/path/to/ligands.sdf
+  docking_box:
+    center: [0.0, 0.0, 0.0]
+    size: [30.0, 30.0, 30.0]
+
+selection:
+  after_fast_top_fraction: 0.20
+  after_balance_top_fraction: 0.15
+  cluster_count: 100
+  cluster_representatives_per_cluster: 1
+
+unidock2:
+  env_name: unidock2
+  gpu_device_id: 0
+  num_pose: 10
+  rmsd_limit: 1.0
+  energy_range: 5.0
+  temp_dir: /tmp
+  stages:
+    fast:
+      search_mode: fast
+      chunk_size: 5000
+    balance:
+      search_mode: balance
+      chunk_size: 3000
+    detail:
+      search_mode: detail
+      chunk_size: 1000
+
+clustering:
+  env_name: dock-pipe
+  fingerprint:
+    type: ecfp
+    radius: 3
+    n_bits: 2048
+  method: kmeans
+
+unimol:
+  env_name: unimol-v2
+  repo_dir: /absolute/path/to/Uni-Mol/unimol_docking_v2
+  model_path: /absolute/path/to/checkpoint_best.pt
+  mode: batch_one2many
+  batch_size: 8
+  conf_size: 10
+  cluster_conformers: true
+  use_current_ligand_conf: false
+  steric_clash_fix: true
+  chunk_size: 128
+
+gnina:
+  executable: gnina
+  mode: minimize
+  chunk_size: 500
+  cnn: default
+
+slurm:
+  account: null
+  cpu_partition: normal
+  bigmem_partition: bigmem
+  gpu_partition_unidock2: gpu_4090
+  gpu_partition_unimol: gpu_h100
+  gpu_partition_gnina: gpu_4090
+  defaults:
+    time: "24:00:00"
+    cpus_per_task: 8
+    mem: 32G
