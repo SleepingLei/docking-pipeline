@@ -66,13 +66,16 @@ create_dock_pipe() {
   local solver_cmd
   solver_cmd="$(solver)"
   if ! conda_env_exists dock-pipe; then
-    "${solver_cmd}" create -n dock-pipe python=3.10 -y
+    "${solver_cmd}" create -n dock-pipe -c conda-forge --override-channels \
+      python=3.10 'numpy<2' pandas rdkit scikit-learn pyyaml tqdm click \
+      -y
+  else
+    "${solver_cmd}" install -n dock-pipe -c conda-forge --override-channels \
+      python=3.10 'numpy<2' pandas rdkit scikit-learn pyyaml tqdm click \
+      -y
   fi
-  "${solver_cmd}" install -n dock-pipe -c conda-forge \
-    'numpy<2' pandas pyarrow rdkit scikit-learn pyyaml tqdm click \
-    -y
   "${CONDA_EXE}" run -n dock-pipe python - <<'PY'
-import numpy, pandas, pyarrow, rdkit, sklearn, yaml
+import numpy, pandas, rdkit, sklearn, yaml
 print("dock-pipe ok")
 PY
 }
