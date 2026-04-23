@@ -19,7 +19,6 @@ def _sbatch_header(
 ) -> str:
     lines: list[str] = [
         "#!/usr/bin/env bash",
-        "set -euo pipefail",
         f"#SBATCH -J {job_name}",
         f"#SBATCH -p {partition}",
         f"#SBATCH -t {time}",
@@ -31,6 +30,8 @@ def _sbatch_header(
         lines.append(f"#SBATCH -A {account}")
     if gres:
         lines.append(f"#SBATCH --gres={gres}")
+    # SBATCH directives must appear before any executable commands.
+    lines.append("set -euo pipefail")
     return "\n".join(lines) + "\n"
 
 
