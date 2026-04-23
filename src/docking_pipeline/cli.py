@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 from pathlib import Path
+
+from docking_pipeline.controller import (
+    generate_run_artifacts,
+    submit_run,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,6 +23,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan = subparsers.add_parser("plan", help="Print the planned pipeline stages.")
     plan.add_argument("config", type=Path)
+
+    run = subparsers.add_parser("run", help="Generate Slurm scripts for a run (and optionally submit).")
+    run.add_argument("config", type=Path)
+    run.add_argument(
+        "--submit",
+        action="store_true",
+        help="Submit the generated Slurm workflow immediately with dependencies.",
+    )
+    run.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow using an existing work_dir and overwrite generated sbatch scripts.",
+    )
+    run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate artifacts but do not run sbatch (implies --no-submit).",
+    )
+
+    submit = subparsers.add_parser("submit", help="Submit an existing run directory.")
+    submit.add_argument("run_dir", type=Path, help="Run directory containing run.yaml and slurm/*.sbatch")
 
     return parser
 
@@ -56,6 +84,17 @@ def main() -> int:
         return validate_config(args.config)
     if args.command == "plan":
         return print_plan(args.config)
+    if args.command == "run":
+        run_dir = generate_run_artifacts(args.config, force=args.force)
+        print(f"Run dir: {run_dir}")
+        if args.dry_run:
+            return 0
+        if args.submit:
+            submit_run(run_dir)
+        return 0
+    if args.command == "submit":
+        submit_run(args.run_dir)
+        return 0
 
     parser.error(f"Unknown command: {args.command}")
     return 2
