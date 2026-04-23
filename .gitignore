@@ -13,3 +13,9 @@ bin/
 models/*.pt
 models/*.pth
 models/*.ckpt
+
+# Local test data (keep configs under configs/ tracked)
+test/*.pdb
+test/*.sdf
+test/*.mol2
+test/*.pdbqt

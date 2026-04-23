@@ -14,8 +14,8 @@ inputs:
 selection:
   after_fast_top_fraction: 0.20
   after_balance_top_fraction: 0.15
-  cluster_count: 100
-  cluster_representatives_per_cluster: 1
+  cluster_count: 10
+  cluster_representatives_per_cluster: 300
 
 unidock2:
   env_name: unidock2
@@ -23,7 +23,7 @@ unidock2:
   num_pose: 10
   rmsd_limit: 1.0
   energy_range: 5.0
-  temp_dir: /tmp
+  temp_dir: /data/project/hanwen/software/docking-pipeline/tmp
   stages:
     fast:
       search_mode: fast
@@ -69,7 +69,6 @@ slurm:
   gpu_partition_unimol: gpu_h100
   gpu_partition_gnina: gpu_4090
   defaults:
-    time: "24:00:00"
-    cpus_per_task: 8
-    mem: 32G
-
+    time: "96:00:00"
+    cpus_per_task: 16
+    mem: 64G

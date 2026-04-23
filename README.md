@@ -52,3 +52,27 @@ The CLI shape is intentionally small for now:
 python -m docking_pipeline.cli plan configs/example_pipeline.yaml
 python -m docking_pipeline.cli validate-config configs/example_pipeline.yaml
 ```
+
+## Run On Slurm (Stepwise)
+
+1. Install the controller into a lightweight env (remote):
+
+```bash
+conda run -n dock-pipe python -m pip install -e .
+```
+
+2. Generate a run directory and Slurm scripts:
+
+```bash
+conda run -n dock-pipe docking-pipeline run configs/test_0_9999.yaml --dry-run
+```
+
+This creates `runs/<run_name>/slurm/*.sbatch`.
+
+3. Submit (prepare only, then print the next commands):
+
+```bash
+conda run -n dock-pipe docking-pipeline run configs/test_0_9999.yaml --submit
+```
+
+The printed block is the intended step-by-step workflow. This is by design: later array sizes depend on chunk files produced earlier.

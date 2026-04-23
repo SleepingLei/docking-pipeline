@@ -358,81 +358,55 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
 
         RUN_YAML="${{RUN_YAML:-{run_yaml_path}}}"
         RUN_DIR="{run_dir}"
+        STATE_DIR="$RUN_DIR/slurm/state"
+        mkdir -p "$STATE_DIR"
+        PREP_JOBID_FILE="$STATE_DIR/00_prepare_jobid.txt"
 
-        echo "[submit] 00_prepare_inputs"
-        j0=$(sbatch "$RUN_DIR/slurm/00_prepare_inputs.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j0"
-
-        # fast
-        n_fast=$(ls -1 "$RUN_DIR/inputs/fast/chunks"/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
-        if [[ "$n_fast" -lt 1 ]]; then
-          echo "No fast chunks found under $RUN_DIR/inputs/fast/chunks" >&2
-          exit 2
+        # Idempotent: if prepare already ran and created chunk files, do not resubmit.
+        if compgen -G "$RUN_DIR/inputs/fast/chunks/chunk*.sdf" > /dev/null; then
+          echo "[submit] 00_prepare_inputs (skipped; chunk files already exist)"
+        elif [[ -f "$PREP_JOBID_FILE" ]]; then
+          echo "[submit] 00_prepare_inputs (skipped; already submitted jobid=$(cat "$PREP_JOBID_FILE"))"
+        else
+          echo "[submit] 00_prepare_inputs"
+          j0=$(sbatch "$RUN_DIR/slurm/00_prepare_inputs.sbatch" | awk '{{print $4}}')
+          echo "$j0" > "$PREP_JOBID_FILE"
+          echo "  jobid=$j0"
+          echo
+          echo "Wait until 00_prepare_inputs finishes, then submit the next phases."
         fi
-        last_fast=$((n_fast-1))
-        echo "[submit] 10_unidock_fast_array afterok:$j0"
-        j1=$(sbatch --dependency=afterok:$j0 --array=0-$last_fast "$RUN_DIR/slurm/10_unidock_fast_array.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j1"
 
-        echo "[submit] 11_select_fast_top afterok:$j1"
-        j2=$(sbatch --dependency=afterok:$j1 "$RUN_DIR/slurm/11_select_fast_top.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j2"
-
-        # balance
-        n_bal=$(ls -1 "$RUN_DIR/inputs/balance/chunks"/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
-        if [[ "$n_bal" -lt 1 ]]; then
-          echo "No balance chunks found under $RUN_DIR/inputs/balance/chunks" >&2
-          exit 2
-        fi
-        last_bal=$((n_bal-1))
-        echo "[submit] 20_unidock_balance_array afterok:$j2"
-        j3=$(sbatch --dependency=afterok:$j2 --array=0-$last_bal "$RUN_DIR/slurm/20_unidock_balance_array.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j3"
-
-        echo "[submit] 21_select_balance_top afterok:$j3"
-        j4=$(sbatch --dependency=afterok:$j3 "$RUN_DIR/slurm/21_select_balance_top.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j4"
-
-        # detail
-        n_det=$(ls -1 "$RUN_DIR/inputs/detail/chunks"/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
-        if [[ "$n_det" -lt 1 ]]; then
-          echo "No detail chunks found under $RUN_DIR/inputs/detail/chunks" >&2
-          exit 2
-        fi
-        last_det=$((n_det-1))
-        echo "[submit] 30_unidock_detail_array afterok:$j4"
-        j5=$(sbatch --dependency=afterok:$j4 --array=0-$last_det "$RUN_DIR/slurm/30_unidock_detail_array.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j5"
-
-        # cluster
-        echo "[submit] 40_cluster_select afterok:$j5"
-        j6=$(sbatch --dependency=afterok:$j5 "$RUN_DIR/slurm/40_cluster_select.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j6"
-
-        # unimol prep
-        echo "[submit] 50_unimol_prepare afterok:$j6"
-        j7=$(sbatch --dependency=afterok:$j6 "$RUN_DIR/slurm/50_unimol_prepare.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j7"
-
-        # unimol array range is derived from generated chunk directories
-        echo "[submit] 60_unimol_array afterok:$j7"
-        n_um=$(ls -1 "$RUN_DIR/unimol/chunks"/chunk_* 2>/dev/null | wc -l | tr -d ' ')
-        if [[ "$n_um" -lt 1 ]]; then
-          echo "No unimol chunks found under $RUN_DIR/unimol/chunks" >&2
-          exit 2
-        fi
-        last_um=$((n_um-1))
-        j8=$(sbatch --dependency=afterok:$j7 --array=0-$last_um "$RUN_DIR/slurm/60_unimol_array.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j8"
-
-        echo "[submit] 70_gnina_array afterok:$j8"
-        j9=$(sbatch --dependency=afterok:$j8 --array=0-$last_um "$RUN_DIR/slurm/70_gnina_array.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j9"
-
-        echo "[submit] 80_finalize afterok:$j9"
-        j10=$(sbatch --dependency=afterok:$j9 "$RUN_DIR/slurm/80_finalize.sbatch" | awk '{{print $4}}')
-        echo "  jobid=$j10"
-
-        echo "Workflow submitted. Final job: $j10"
+        echo
+        echo "Stepwise submit (copy/paste):"
+        echo "  cd \"$RUN_DIR\""
+        echo
+        echo "# Uni-Dock2 fast"
+        echo "  n=\\$(ls -1 inputs/fast/chunks/chunk*.sdf | wc -l)"
+        echo "  sbatch --array=0-\\$((n-1)) slurm/10_unidock_fast_array.sbatch"
+        echo "  sbatch slurm/11_select_fast_top.sbatch"
+        echo
+        echo "# Uni-Dock2 balance"
+        echo "  n=\\$(ls -1 inputs/balance/chunks/chunk*.sdf | wc -l)"
+        echo "  sbatch --array=0-\\$((n-1)) slurm/20_unidock_balance_array.sbatch"
+        echo "  sbatch slurm/21_select_balance_top.sbatch"
+        echo
+        echo "# Uni-Dock2 detail"
+        echo "  n=\\$(ls -1 inputs/detail/chunks/chunk*.sdf | wc -l)"
+        echo "  sbatch --array=0-\\$((n-1)) slurm/30_unidock_detail_array.sbatch"
+        echo
+        echo "# Clustering"
+        echo "  sbatch slurm/40_cluster_select.sbatch"
+        echo
+        echo "# Uni-Mol docking v2"
+        echo "  sbatch slurm/50_unimol_prepare.sbatch"
+        echo "  n=\\$(ls -d unimol/chunks/chunk_* | wc -l)"
+        echo "  sbatch --array=0-\\$((n-1)) slurm/60_unimol_array.sbatch"
+        echo
+        echo "# gnina rescoring + finalize"
+        echo "  sbatch --array=0-\\$((n-1)) slurm/70_gnina_array.sbatch"
+        echo "  sbatch slurm/80_finalize.sbatch"
+        echo
+        echo "Final output: $RUN_DIR/final/final_scores.csv"
+        exit 0
         """
     )
