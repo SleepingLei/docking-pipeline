@@ -69,6 +69,6 @@ slurm:
   gpu_partition_unimol: gpu_h100
   gpu_partition_gnina: gpu_4090
   defaults:
-    time: "96:00:00"
+    time: "24:00:00"
     cpus_per_task: 16
     mem: 64G
