@@ -45,8 +45,8 @@ clustering:
 
 unimol:
   env_name: unimol-v2
-  repo_dir: /absolute/path/to/Uni-Mol/unimol_docking_v2
-  model_path: /absolute/path/to/checkpoint_best.pt
+  repo_dir: /data/project/hanwen/software/docking-pipeline/third_party/Uni-Mol/unimol_docking_v2
+  model_path: /data/project/hanwen/software/docking-pipeline/models/unimol_docking_v2_240517.pt
   mode: batch_one2many
   batch_size: 8
   conf_size: 10
