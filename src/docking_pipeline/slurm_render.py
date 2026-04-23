@@ -362,6 +362,12 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
         mkdir -p "$STATE_DIR"
         PREP_JOBID_FILE="$STATE_DIR/00_prepare_jobid.txt"
 
+        SBATCH_TIME="${{SBATCH_TIME:-}}"
+        SBATCH_ARGS=()
+        if [[ -n "$SBATCH_TIME" ]]; then
+          SBATCH_ARGS+=("-t" "$SBATCH_TIME")
+        fi
+
         # Idempotent: if prepare already ran and created chunk files, do not resubmit.
         if [[ "${{SKIP_PREPARE:-0}}" == "1" ]]; then
           echo "[submit] 00_prepare_inputs (skipped; SKIP_PREPARE=1)"
@@ -371,7 +377,7 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
           echo "[submit] 00_prepare_inputs (skipped; already submitted jobid=$(cat "$PREP_JOBID_FILE"))"
         else
           echo "[submit] 00_prepare_inputs"
-          j0=$(sbatch "$RUN_DIR/slurm/00_prepare_inputs.sbatch" | awk '{{print $4}}')
+          j0=$(sbatch "${{SBATCH_ARGS[@]}}" "$RUN_DIR/slurm/00_prepare_inputs.sbatch" | awk '{{print $4}}')
           echo "$j0" > "$PREP_JOBID_FILE"
           echo "  jobid=$j0"
           echo
