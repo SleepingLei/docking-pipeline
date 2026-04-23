@@ -89,18 +89,19 @@ have() {
 
 write_slurm_smoke_jobs() {
   local cpu_job="${OUT_DIR}/slurm_cpu_smoke.sbatch"
-  cat > "${cpu_job}" <<'EOF'
+  cat > "${cpu_job}" <<EOF
 #!/usr/bin/env bash
 #SBATCH --job-name=dock_cpu_smoke
 #SBATCH --partition=normal
 #SBATCH --time=00:02:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=1G
-#SBATCH --output=slurm_cpu_smoke.%j.out
+#SBATCH --chdir=${OUT_DIR}
+#SBATCH --output=${OUT_DIR}/slurm_cpu_smoke.%j.out
 
 set -euo pipefail
-echo "host=$(hostname)"
-echo "date=$(date)"
+echo "host=\$(hostname)"
+echo "date=\$(date)"
 which python || true
 python -V || true
 EOF
@@ -115,7 +116,8 @@ EOF
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
 #SBATCH --gres=gpu:1
-#SBATCH --output=slurm_gpu_${partition}_smoke.%j.out
+#SBATCH --chdir=${OUT_DIR}
+#SBATCH --output=${OUT_DIR}/slurm_gpu_${partition}_smoke.%j.out
 
 set -euo pipefail
 echo "host=\$(hostname)"
