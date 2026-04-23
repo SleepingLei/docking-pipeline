@@ -141,7 +141,9 @@ PY
 
 install_gnina_binary() {
   mkdir -p "${BIN_DIR}"
-  python - "$BIN_DIR" <<'PY'
+  local gnina_url_file="${BIN_DIR}/.gnina_download_url"
+  local gnina_name_file="${BIN_DIR}/.gnina_download_name"
+  python - "$BIN_DIR" "${gnina_url_file}" "${gnina_name_file}" <<'PY'
 import json
 import os
 import stat
@@ -152,6 +154,8 @@ import zipfile
 from pathlib import Path
 
 bin_dir = Path(sys.argv[1])
+url_file = Path(sys.argv[2])
+name_file = Path(sys.argv[3])
 tag = os.environ.get("GNINA_TAG", "").strip()
 hint = os.environ.get("GNINA_ASSET_HINT", "cuda12.8").lower()
 
@@ -192,8 +196,42 @@ asset = sorted(assets, key=score, reverse=True)[0]
 name = asset["name"]
 url = asset["browser_download_url"]
 download_path = bin_dir / name
-print(f"Downloading {name} from {url}")
-urllib.request.urlretrieve(url, download_path)
+url_file.write_text(url)
+name_file.write_text(name)
+print(f"Selected {name} from {url}")
+PY
+
+  local gnina_url
+  local gnina_name
+  local download_path
+  gnina_url="$(cat "${gnina_url_file}")"
+  gnina_name="$(cat "${gnina_name_file}")"
+  download_path="${BIN_DIR}/${gnina_name}"
+
+  echo "Downloading ${gnina_name} from ${gnina_url}"
+  if command_exists curl; then
+    curl -L --retry 8 --retry-delay 5 --retry-all-errors \
+      --connect-timeout 30 --continue-at - \
+      -o "${download_path}" "${gnina_url}"
+  elif command_exists wget; then
+    wget --tries=8 --continue -O "${download_path}" "${gnina_url}"
+  else
+    python - "${gnina_url}" "${download_path}" <<'PY'
+import sys
+import urllib.request
+urllib.request.urlretrieve(sys.argv[1], sys.argv[2])
+PY
+  fi
+
+  python - "$BIN_DIR" "${download_path}" <<'PY'
+import stat
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+bin_dir = Path(sys.argv[1])
+download_path = Path(sys.argv[2])
 
 gnina_path = bin_dir / "gnina"
 
