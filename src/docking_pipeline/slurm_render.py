@@ -288,6 +288,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             conda run -n {cfg.unimol.env_name} python "{cfg.unimol.repo_dir}/interface/demo.py" \\
               --mode batch_one2many \\
               --batch-size {cfg.unimol.batch_size} \\
+              --nthreads {defaults.cpus_per_task} \\
               --conf-size {cfg.unimol.conf_size} \\
               {"--cluster" if cfg.unimol.cluster_conformers else ""} \\
               --input-protein "{cfg.inputs.receptor_pdb}" \\
@@ -358,29 +359,19 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
         RUN_YAML="${{RUN_YAML:-{run_yaml_path}}}"
         RUN_DIR="{run_dir}"
 
-        # Helper: update an sbatch file's array range based on existing chunk files.
-        set_array_range() {{
-          local sbatch_file="$1"
-          local chunks_dir="$2"
-          local n
-          n=$(ls -1 "$chunks_dir"/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
-          if [[ "$n" -lt 1 ]]; then
-            echo "No chunks found under $chunks_dir" >&2
-            exit 2
-          fi
-          local last=$((n-1))
-          # Replace the single placeholder array line.
-          perl -0777 -i -pe 's/^#SBATCH --array=0-0$/#SBATCH --array=0-'\"$last\"'/m' "$sbatch_file"
-        }}
-
         echo "[submit] 00_prepare_inputs"
         j0=$(sbatch "$RUN_DIR/slurm/00_prepare_inputs.sbatch" | awk '{{print $4}}')
         echo "  jobid=$j0"
 
         # fast
-        set_array_range "$RUN_DIR/slurm/10_unidock_fast_array.sbatch" "$RUN_DIR/inputs/fast/chunks"
+        n_fast=$(ls -1 "$RUN_DIR/inputs/fast/chunks"/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$n_fast" -lt 1 ]]; then
+          echo "No fast chunks found under $RUN_DIR/inputs/fast/chunks" >&2
+          exit 2
+        fi
+        last_fast=$((n_fast-1))
         echo "[submit] 10_unidock_fast_array afterok:$j0"
-        j1=$(sbatch --dependency=afterok:$j0 "$RUN_DIR/slurm/10_unidock_fast_array.sbatch" | awk '{{print $4}}')
+        j1=$(sbatch --dependency=afterok:$j0 --array=0-$last_fast "$RUN_DIR/slurm/10_unidock_fast_array.sbatch" | awk '{{print $4}}')
         echo "  jobid=$j1"
 
         echo "[submit] 11_select_fast_top afterok:$j1"
@@ -388,9 +379,14 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
         echo "  jobid=$j2"
 
         # balance
-        set_array_range "$RUN_DIR/slurm/20_unidock_balance_array.sbatch" "$RUN_DIR/inputs/balance/chunks"
+        n_bal=$(ls -1 "$RUN_DIR/inputs/balance/chunks"/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$n_bal" -lt 1 ]]; then
+          echo "No balance chunks found under $RUN_DIR/inputs/balance/chunks" >&2
+          exit 2
+        fi
+        last_bal=$((n_bal-1))
         echo "[submit] 20_unidock_balance_array afterok:$j2"
-        j3=$(sbatch --dependency=afterok:$j2 "$RUN_DIR/slurm/20_unidock_balance_array.sbatch" | awk '{{print $4}}')
+        j3=$(sbatch --dependency=afterok:$j2 --array=0-$last_bal "$RUN_DIR/slurm/20_unidock_balance_array.sbatch" | awk '{{print $4}}')
         echo "  jobid=$j3"
 
         echo "[submit] 21_select_balance_top afterok:$j3"
@@ -398,9 +394,14 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
         echo "  jobid=$j4"
 
         # detail
-        set_array_range "$RUN_DIR/slurm/30_unidock_detail_array.sbatch" "$RUN_DIR/inputs/detail/chunks"
+        n_det=$(ls -1 "$RUN_DIR/inputs/detail/chunks"/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$n_det" -lt 1 ]]; then
+          echo "No detail chunks found under $RUN_DIR/inputs/detail/chunks" >&2
+          exit 2
+        fi
+        last_det=$((n_det-1))
         echo "[submit] 30_unidock_detail_array afterok:$j4"
-        j5=$(sbatch --dependency=afterok:$j4 "$RUN_DIR/slurm/30_unidock_detail_array.sbatch" | awk '{{print $4}}')
+        j5=$(sbatch --dependency=afterok:$j4 --array=0-$last_det "$RUN_DIR/slurm/30_unidock_detail_array.sbatch" | awk '{{print $4}}')
         echo "  jobid=$j5"
 
         # cluster
@@ -421,13 +422,11 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
           exit 2
         fi
         last_um=$((n_um-1))
-        perl -0777 -i -pe 's/^#SBATCH --array=0-0$/#SBATCH --array=0-'\"$last_um\"'/m' "$RUN_DIR/slurm/60_unimol_array.sbatch"
-        j8=$(sbatch --dependency=afterok:$j7 "$RUN_DIR/slurm/60_unimol_array.sbatch" | awk '{{print $4}}')
+        j8=$(sbatch --dependency=afterok:$j7 --array=0-$last_um "$RUN_DIR/slurm/60_unimol_array.sbatch" | awk '{{print $4}}')
         echo "  jobid=$j8"
 
         echo "[submit] 70_gnina_array afterok:$j8"
-        perl -0777 -i -pe 's/^#SBATCH --array=0-0$/#SBATCH --array=0-'\"$last_um\"'/m' "$RUN_DIR/slurm/70_gnina_array.sbatch"
-        j9=$(sbatch --dependency=afterok:$j8 "$RUN_DIR/slurm/70_gnina_array.sbatch" | awk '{{print $4}}')
+        j9=$(sbatch --dependency=afterok:$j8 --array=0-$last_um "$RUN_DIR/slurm/70_gnina_array.sbatch" | awk '{{print $4}}')
         echo "  jobid=$j9"
 
         echo "[submit] 80_finalize afterok:$j9"
@@ -437,4 +436,3 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
         echo "Workflow submitted. Final job: $j10"
         """
     )
-

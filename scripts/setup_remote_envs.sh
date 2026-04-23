@@ -78,6 +78,9 @@ create_dock_pipe() {
 import numpy, pandas, rdkit, sklearn, yaml
 print("dock-pipe ok")
 PY
+
+  # Install this repo into the controller env so `docking-pipeline` is available without PYTHONPATH hacks.
+  "${CONDA_EXE}" run -n dock-pipe python -m pip install -e "${PROJECT_DIR}"
 }
 
 create_unidock2() {
