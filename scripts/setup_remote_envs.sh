@@ -82,13 +82,17 @@ PY
 
 create_unidock2() {
   ensure_conda_shell
+  local solver_cmd
+  solver_cmd="$(solver)"
   if ! conda_env_exists unidock2; then
-    "${CONDA_EXE}" create -n unidock2 python=3.10 -y
+    "${solver_cmd}" create -n unidock2 -c conda-forge --override-channels \
+      python=3.10 -y
   fi
-  "${CONDA_EXE}" install -n unidock2 \
+  "${solver_cmd}" install -n unidock2 \
     unidock2 cuda-version=12.0 \
     -c http://quetz.dp.tech:8088/get/baymax \
     -c conda-forge \
+    --override-channels \
     --no-repodata-use-zst \
     -y
   "${CONDA_EXE}" run -n unidock2 unidock2 --version
