@@ -275,10 +275,10 @@ PY
   solver_cmd="$(solver)"
   if ! conda_env_exists gnina-cuda; then
     "${solver_cmd}" create -n gnina-cuda -c nvidia -c conda-forge \
-      cudnn cuda-version=12 -y
+      cudnn cuda-cudart cuda-version=12 -y
   else
     "${solver_cmd}" install -n gnina-cuda -c nvidia -c conda-forge \
-      cudnn cuda-version=12 -y
+      cudnn cuda-cudart cuda-version=12 -y
   fi
 
   local conda_base
