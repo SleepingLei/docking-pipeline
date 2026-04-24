@@ -18,11 +18,14 @@ def _first_mol_block_text(path: Path) -> str:
     lines = txt.splitlines()
     if not lines:
         raise ValueError(f"Empty SDF: {path}")
+    # Uni-Mol occasionally writes single-molecule SDFs without the "$$$$" terminator.
+    # In that case, treat the entire file as one record and append "$$$$" ourselves.
     try:
         end_i = next(i for i, ln in enumerate(lines) if ln.strip() == "$$$$")
-    except StopIteration as e:
-        raise ValueError(f"Missing '$$$$' terminator in SDF: {path}") from e
-    return "\n".join(lines[: end_i + 1]) + "\n"
+        return "\n".join(lines[: end_i + 1]) + "\n"
+    except StopIteration:
+        # Always ensure "$$$$" starts on a new line.
+        return "\n".join(lines) + "\n$$$$\n"
 
 
 def _ensure_ligand_id_props(sdf_block: str, *, ligand_id: str) -> str:
@@ -78,12 +81,16 @@ def main() -> int:
     with in_sdf.open("w", encoding="utf-8") as f:
         for p in sdf_paths:
             lid = p.stem
-            block = _first_mol_block_text(p)
-            block = _ensure_ligand_id_props(block, ligand_id=lid)
-            f.write(block)
-            if not block.rstrip().endswith("$$$$"):
-                f.write("$$$$\n")
-            count += 1
+            try:
+                block = _first_mol_block_text(p)
+                block = _ensure_ligand_id_props(block, ligand_id=lid)
+                f.write(block)
+                if not block.rstrip().endswith("$$$$"):
+                    f.write("$$$$\n")
+                count += 1
+            except Exception as e:
+                # Don't fail the whole chunk on a single malformed SDF.
+                print(f"[warn] skip unimol sdf due to parse error: {p} ({e})")
     if count == 0:
         raise RuntimeError(f"No Uni-Mol output SDFs found under {in_dir}")
 
