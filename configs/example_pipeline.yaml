@@ -58,9 +58,9 @@ unimol:
 
 gnina:
   executable: gnina
-  mode: minimize
+  mode: score_only
   chunk_size: 500
-  cnn: default
+  # cnn: null  # Optional. If omitted/null, we do not pass --cnn and let gnina decide.
 
 slurm:
   account: null

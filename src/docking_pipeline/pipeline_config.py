@@ -130,9 +130,11 @@ class UniMolSection:
 @dataclass(frozen=True)
 class GninaSection:
     executable: str = "gnina"
-    mode: str = "minimize"  # or score_only
+    # For pipeline usage we typically want to rescore existing poses without changing them.
+    mode: str = "score_only"  # or minimize
     chunk_size: int = 500
-    cnn: str = "default"
+    # Optional. If None/empty, do not pass `--cnn ...` (let gnina defaults decide).
+    cnn: str | None = None
 
 
 @dataclass(frozen=True)
@@ -342,11 +344,23 @@ def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
     )
 
     gn_d = data.get("gnina") or {}
+    cnn_raw = gn_d.get("cnn", None)
+    if cnn_raw is None:
+        cnn_val = None
+    else:
+        s = str(cnn_raw).strip()
+        if not s:
+            cnn_val = None
+        elif s.lower() in {"default", "none", "null"}:
+            # "default" is not a valid gnina model name; users often intend "use gnina's default".
+            cnn_val = None
+        else:
+            cnn_val = s
     gnina = GninaSection(
         executable=str(gn_d.get("executable", "gnina")),
-        mode=str(gn_d.get("mode", "minimize")),
+        mode=str(gn_d.get("mode", "score_only")),
         chunk_size=int(gn_d.get("chunk_size", 500)),
-        cnn=str(gn_d.get("cnn", "default")),
+        cnn=cnn_val,
     )
 
     sl_d = data.get("slurm") or {}

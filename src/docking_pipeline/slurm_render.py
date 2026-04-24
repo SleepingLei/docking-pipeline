@@ -17,6 +17,7 @@ def _sbatch_header(
     account: str | None,
     output: str,
 ) -> str:
+    err = output[:-4] + ".err" if output.endswith(".out") else output + ".err"
     lines: list[str] = [
         "#!/usr/bin/env bash",
         f"#SBATCH -J {job_name}",
@@ -24,7 +25,10 @@ def _sbatch_header(
         f"#SBATCH --cpus-per-task={cpus_per_task}",
         f"#SBATCH --mem={mem}",
         f"#SBATCH -o {output}",
+        f"#SBATCH -e {err}",
     ]
+    if time:
+        lines.append(f"#SBATCH -t {time}")
     if account:
         lines.append(f"#SBATCH -A {account}")
     if gres:
@@ -345,6 +349,15 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
 
     scripts["slurm/submit_workflow.sh"] = _render_submit_script(cfg, run_yaml_path=run_yaml_path)
     scripts["slurm/submit_workflow_auto.sh"] = _render_submit_auto_script(cfg, run_yaml_path=run_yaml_path)
+    scripts["slurm/submit_workflow_deps.sh"] = _render_submit_deps_script(cfg, run_yaml_path=run_yaml_path)
+
+    # Dependency-chain submitters (small CPU jobs that only submit the next stage once inputs exist).
+    scripts["slurm/01_submit_fast.sbatch"] = _render_submitter_fast(cfg, run_yaml_path=run_yaml_path)
+    scripts["slurm/02_submit_balance.sbatch"] = _render_submitter_balance(cfg, run_yaml_path=run_yaml_path)
+    scripts["slurm/03_submit_detail.sbatch"] = _render_submitter_detail(cfg, run_yaml_path=run_yaml_path)
+    scripts["slurm/04_submit_cluster_unimol.sbatch"] = _render_submitter_cluster_unimol(cfg, run_yaml_path=run_yaml_path)
+    scripts["slurm/05_submit_unimol_array.sbatch"] = _render_submitter_unimol_array(cfg, run_yaml_path=run_yaml_path)
+    scripts["slurm/06_submit_gnina_finalize.sbatch"] = _render_submitter_gnina_finalize(cfg, run_yaml_path=run_yaml_path)
 
     return scripts
 
@@ -468,10 +481,18 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
           done
 
           local state
-          state="$(sacct -j "$jobid" -n -o State 2>/dev/null | head -n1 | awk '{{print $1}}' || true)"
+          # sacct can lag right after completion; poll a bit.
+          state=""
+          for _ in {{1..60}}; do
+            state="$(sacct -j "$jobid" -n -o State 2>/dev/null | head -n1 | awk '{{print $1}}' || true)"
+            if [[ -n "$state" ]]; then
+              break
+            fi
+            sleep 5
+          done
           if [[ -z "$state" ]]; then
-            echo "[warn] sacct returned empty state for job $jobid; continuing" >&2
-            return 0
+            echo "[error] sacct returned empty state for job $jobid for too long" >&2
+            return 1
           fi
           if [[ "$state" == "COMPLETED" ]]; then
             return 0
@@ -479,6 +500,35 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
           echo "[error] job $jobid ended with state=$state" >&2
           sacct -j "$jobid" --format=JobID,JobName%20,Partition,State,ExitCode,Elapsed,NodeList | head -n 20 >&2 || true
           return 1
+        }}
+
+        wait_for_glob() {{
+          # Usage: wait_for_glob <glob> <jobid>
+          local pattern="$1"
+          local jobid="$2"
+          while true; do
+            if compgen -G "$pattern" > /dev/null; then
+              return 0
+            fi
+            # If the job already finished, fail fast (it should have produced the files).
+            if ! squeue -h -j "$jobid" >/dev/null 2>&1; then
+              echo "[error] squeue failed while waiting for $pattern" >&2
+              return 1
+            fi
+            local q
+            q="$(squeue -h -j "$jobid" 2>/dev/null || true)"
+            if [[ -z "$q" ]]; then
+              # job no longer in queue; confirm completion state (and surface errors)
+              wait_job "$jobid"
+              break
+            fi
+            sleep 10
+          done
+          if compgen -G "$pattern" > /dev/null; then
+            return 0
+          fi
+          echo "[error] expected outputs not found: $pattern" >&2
+          return 2
         }}
 
         cd "$RUN_DIR"
@@ -489,14 +539,14 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
         else
           j0="$(submit "slurm/00_prepare_inputs.sbatch")"
           echo "  jobid=$j0"
-          wait_job "$j0"
+          wait_for_glob "inputs/fast/chunks/chunk*.sdf" "$j0"
         fi
 
         echo "[auto] 10_unidock_fast_array"
         n_fast="$(ls -1 inputs/fast/chunks/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')"
         if [[ "$n_fast" -lt 1 ]]; then
           echo "[error] no fast chunks under inputs/fast/chunks" >&2
-          exit 2
+        exit 2
         fi
         n_fast_sum="$(ls -1 unidock_fast/chunk_summaries/summary_*.csv 2>/dev/null | wc -l | tr -d ' ')"
         if [[ "$n_fast_sum" -ge "$n_fast" ]]; then
@@ -597,4 +647,320 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
         echo "[auto] done"
         echo "Final output: $RUN_DIR/final/final_scores.csv"
         """
+    )
+
+
+def _render_submit_deps_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> str:
+    """
+    Submit the whole workflow as a Slurm dependency chain.
+
+    This submits:
+      00_prepare_inputs (unless fast chunks already exist)
+      01_submit_fast (depends on prepare if needed)
+    and the rest is submitted by small "submitter" jobs that run after dependencies complete.
+    """
+    run_dir = cfg.run.work_dir
+    return textwrap.dedent(
+        f"""\
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        RUN_YAML="${{RUN_YAML:-{run_yaml_path}}}"
+        RUN_DIR="{run_dir}"
+        STATE_DIR="$RUN_DIR/slurm/state"
+        mkdir -p "$STATE_DIR"
+
+        SBATCH_TIME="${{SBATCH_TIME:-}}"
+        SBATCH_ARGS=()
+        if [[ -n "$SBATCH_TIME" ]]; then
+          SBATCH_ARGS+=("-t" "$SBATCH_TIME")
+        fi
+
+        cd "$RUN_DIR"
+
+        j0=""
+        if compgen -G "inputs/fast/chunks/chunk*.sdf" > /dev/null; then
+          echo "[deps] 00_prepare_inputs skipped (fast chunks already exist)"
+        else
+          echo "[deps] 00_prepare_inputs"
+          j0=$(sbatch --parsable "${{SBATCH_ARGS[@]}}" "slurm/00_prepare_inputs.sbatch")
+          echo "$j0" > "$STATE_DIR/00_prepare_jobid.txt"
+          echo "  jobid=$j0"
+        fi
+
+        echo "[deps] 01_submit_fast (dependency chain start)"
+        if [[ -n "$j0" ]]; then
+          j1=$(sbatch --parsable --dependency=afterok:"$j0" "slurm/01_submit_fast.sbatch")
+        else
+          j1=$(sbatch --parsable "slurm/01_submit_fast.sbatch")
+        fi
+        echo "$j1" > "$STATE_DIR/01_submit_fast_jobid.txt"
+        echo "  jobid=$j1"
+
+        echo
+        echo "Submitted dependency chain under $RUN_DIR."
+        echo "Tip: sacct -j $j1 --format=JobID,JobName%20,State,ExitCode,Elapsed"
+        """
+    )
+
+
+def _render_submitter_fast(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> str:
+    run_dir = cfg.run.work_dir
+    logs_dir = run_dir / "logs"
+    defaults = cfg.slurm.defaults
+    acct = cfg.slurm.account
+    return (
+        _sbatch_header(
+            job_name=f"{cfg.run.name}_submit_fast",
+            partition=cfg.slurm.cpu_partition,
+            time=defaults.time,
+            cpus_per_task=1,
+            mem="1G",
+            gres=None,
+            account=acct,
+            output=str(logs_dir / "01_submit_fast_%j.out"),
+        )
+        + _python_env_exports(cfg.run.project_dir)
+        + textwrap.dedent(
+            f"""\
+            RUN_DIR="{run_dir}"
+            STATE_DIR="$RUN_DIR/slurm/state"
+            mkdir -p "$STATE_DIR"
+            cd "$RUN_DIR"
+
+            n=$(ls -1 inputs/fast/chunks/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$n" -lt 1 ]]; then
+              echo "[error] no fast chunks under inputs/fast/chunks" >&2
+              exit 2
+            fi
+            echo "[deps] submit unidock fast array n=$n"
+            j_fast=$(sbatch --parsable --array=0-$((n-1)) slurm/10_unidock_fast_array.sbatch)
+            echo "$j_fast" > "$STATE_DIR/10_fast_array_jobid.txt"
+            echo "  fast_array_jobid=$j_fast"
+
+            j_sel=$(sbatch --parsable --dependency=afterok:"$j_fast" slurm/11_select_fast_top.sbatch)
+            echo "$j_sel" > "$STATE_DIR/11_select_fast_jobid.txt"
+            echo "  select_fast_jobid=$j_sel"
+
+            j_next=$(sbatch --parsable --dependency=afterok:"$j_sel" slurm/02_submit_balance.sbatch)
+            echo "$j_next" > "$STATE_DIR/02_submit_balance_jobid.txt"
+            echo "  next_submitter_jobid=$j_next"
+            """
+        )
+    )
+
+
+def _render_submitter_balance(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> str:
+    run_dir = cfg.run.work_dir
+    logs_dir = run_dir / "logs"
+    defaults = cfg.slurm.defaults
+    acct = cfg.slurm.account
+    return (
+        _sbatch_header(
+            job_name=f"{cfg.run.name}_submit_bal",
+            partition=cfg.slurm.cpu_partition,
+            time=defaults.time,
+            cpus_per_task=1,
+            mem="1G",
+            gres=None,
+            account=acct,
+            output=str(logs_dir / "02_submit_balance_%j.out"),
+        )
+        + _python_env_exports(cfg.run.project_dir)
+        + textwrap.dedent(
+            f"""\
+            RUN_DIR="{run_dir}"
+            STATE_DIR="$RUN_DIR/slurm/state"
+            mkdir -p "$STATE_DIR"
+            cd "$RUN_DIR"
+
+            n=$(ls -1 inputs/balance/chunks/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$n" -lt 1 ]]; then
+              echo "[error] no balance chunks under inputs/balance/chunks" >&2
+              exit 2
+            fi
+            echo "[deps] submit unidock balance array n=$n"
+            j_bal=$(sbatch --parsable --array=0-$((n-1)) slurm/20_unidock_balance_array.sbatch)
+            echo "$j_bal" > "$STATE_DIR/20_balance_array_jobid.txt"
+            echo "  balance_array_jobid=$j_bal"
+
+            j_sel=$(sbatch --parsable --dependency=afterok:"$j_bal" slurm/21_select_balance_top.sbatch)
+            echo "$j_sel" > "$STATE_DIR/21_select_balance_jobid.txt"
+            echo "  select_balance_jobid=$j_sel"
+
+            j_next=$(sbatch --parsable --dependency=afterok:"$j_sel" slurm/03_submit_detail.sbatch)
+            echo "$j_next" > "$STATE_DIR/03_submit_detail_jobid.txt"
+            echo "  next_submitter_jobid=$j_next"
+            """
+        )
+    )
+
+
+def _render_submitter_detail(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> str:
+    run_dir = cfg.run.work_dir
+    logs_dir = run_dir / "logs"
+    defaults = cfg.slurm.defaults
+    acct = cfg.slurm.account
+    return (
+        _sbatch_header(
+            job_name=f"{cfg.run.name}_submit_det",
+            partition=cfg.slurm.cpu_partition,
+            time=defaults.time,
+            cpus_per_task=1,
+            mem="1G",
+            gres=None,
+            account=acct,
+            output=str(logs_dir / "03_submit_detail_%j.out"),
+        )
+        + _python_env_exports(cfg.run.project_dir)
+        + textwrap.dedent(
+            f"""\
+            RUN_DIR="{run_dir}"
+            STATE_DIR="$RUN_DIR/slurm/state"
+            mkdir -p "$STATE_DIR"
+            cd "$RUN_DIR"
+
+            n=$(ls -1 inputs/detail/chunks/chunk*.sdf 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$n" -lt 1 ]]; then
+              echo "[error] no detail chunks under inputs/detail/chunks" >&2
+              exit 2
+            fi
+            echo "[deps] submit unidock detail array n=$n"
+            j_det=$(sbatch --parsable --array=0-$((n-1)) slurm/30_unidock_detail_array.sbatch)
+            echo "$j_det" > "$STATE_DIR/30_detail_array_jobid.txt"
+            echo "  detail_array_jobid=$j_det"
+
+            j_next=$(sbatch --parsable --dependency=afterok:"$j_det" slurm/04_submit_cluster_unimol.sbatch)
+            echo "$j_next" > "$STATE_DIR/04_submit_cluster_unimol_jobid.txt"
+            echo "  next_submitter_jobid=$j_next"
+            """
+        )
+    )
+
+
+def _render_submitter_cluster_unimol(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> str:
+    run_dir = cfg.run.work_dir
+    logs_dir = run_dir / "logs"
+    defaults = cfg.slurm.defaults
+    acct = cfg.slurm.account
+    return (
+        _sbatch_header(
+            job_name=f"{cfg.run.name}_submit_um",
+            partition=cfg.slurm.cpu_partition,
+            time=defaults.time,
+            cpus_per_task=1,
+            mem="2G",
+            gres=None,
+            account=acct,
+            output=str(logs_dir / "04_submit_cluster_unimol_%j.out"),
+        )
+        + _python_env_exports(cfg.run.project_dir)
+        + textwrap.dedent(
+            f"""\
+            RUN_DIR="{run_dir}"
+            STATE_DIR="$RUN_DIR/slurm/state"
+            mkdir -p "$STATE_DIR"
+            cd "$RUN_DIR"
+
+            echo "[deps] submit clustering select"
+            j_cl=$(sbatch --parsable slurm/40_cluster_select.sbatch)
+            echo "$j_cl" > "$STATE_DIR/40_cluster_jobid.txt"
+            echo "  cluster_jobid=$j_cl"
+
+            echo "[deps] submit unimol prepare"
+            j_prep=$(sbatch --parsable --dependency=afterok:"$j_cl" slurm/50_unimol_prepare.sbatch)
+            echo "$j_prep" > "$STATE_DIR/50_unimol_prepare_jobid.txt"
+            echo "  unimol_prepare_jobid=$j_prep"
+
+            j_next=$(sbatch --parsable --dependency=afterok:"$j_prep" slurm/05_submit_unimol_array.sbatch)
+            echo "$j_next" > "$STATE_DIR/05_submit_unimol_array_jobid.txt"
+            echo "  next_submitter_jobid=$j_next"
+            """
+        )
+    )
+
+
+def _render_submitter_unimol_array(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> str:
+    run_dir = cfg.run.work_dir
+    logs_dir = run_dir / "logs"
+    defaults = cfg.slurm.defaults
+    acct = cfg.slurm.account
+    return (
+        _sbatch_header(
+            job_name=f"{cfg.run.name}_submit_umarr",
+            partition=cfg.slurm.cpu_partition,
+            time=defaults.time,
+            cpus_per_task=1,
+            mem="1G",
+            gres=None,
+            account=acct,
+            output=str(logs_dir / "05_submit_unimol_array_%j.out"),
+        )
+        + _python_env_exports(cfg.run.project_dir)
+        + textwrap.dedent(
+            f"""\
+            RUN_DIR="{run_dir}"
+            STATE_DIR="$RUN_DIR/slurm/state"
+            mkdir -p "$STATE_DIR"
+            cd "$RUN_DIR"
+
+            n=$(ls -d unimol/chunks/chunk_* 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$n" -lt 1 ]]; then
+              echo "[error] no unimol chunks under unimol/chunks" >&2
+              exit 2
+            fi
+            echo "[deps] submit unimol array n=$n"
+            j_um=$(sbatch --parsable --array=0-$((n-1)) slurm/60_unimol_array.sbatch)
+            echo "$j_um" > "$STATE_DIR/60_unimol_array_jobid.txt"
+            echo "  unimol_array_jobid=$j_um"
+
+            j_next=$(sbatch --parsable --dependency=afterok:"$j_um" slurm/06_submit_gnina_finalize.sbatch)
+            echo "$j_next" > "$STATE_DIR/06_submit_gnina_finalize_jobid.txt"
+            echo "  next_submitter_jobid=$j_next"
+            """
+        )
+    )
+
+
+def _render_submitter_gnina_finalize(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> str:
+    run_dir = cfg.run.work_dir
+    logs_dir = run_dir / "logs"
+    defaults = cfg.slurm.defaults
+    acct = cfg.slurm.account
+    return (
+        _sbatch_header(
+            job_name=f"{cfg.run.name}_submit_gn",
+            partition=cfg.slurm.cpu_partition,
+            time=defaults.time,
+            cpus_per_task=1,
+            mem="1G",
+            gres=None,
+            account=acct,
+            output=str(logs_dir / "06_submit_gnina_finalize_%j.out"),
+        )
+        + _python_env_exports(cfg.run.project_dir)
+        + textwrap.dedent(
+            f"""\
+            RUN_DIR="{run_dir}"
+            STATE_DIR="$RUN_DIR/slurm/state"
+            mkdir -p "$STATE_DIR"
+            cd "$RUN_DIR"
+
+            n=$(ls -d unimol/chunks/chunk_* 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "$n" -lt 1 ]]; then
+              echo "[error] no unimol chunks under unimol/chunks" >&2
+              exit 2
+            fi
+
+            echo "[deps] submit gnina array n=$n"
+            j_gn=$(sbatch --parsable --array=0-$((n-1)) slurm/70_gnina_array.sbatch)
+            echo "$j_gn" > "$STATE_DIR/70_gnina_array_jobid.txt"
+            echo "  gnina_array_jobid=$j_gn"
+
+            echo "[deps] submit finalize"
+            j_fin=$(sbatch --parsable --dependency=afterok:"$j_gn" slurm/80_finalize.sbatch)
+            echo "$j_fin" > "$STATE_DIR/80_finalize_jobid.txt"
+            echo "  finalize_jobid=$j_fin"
+            """
+        )
     )

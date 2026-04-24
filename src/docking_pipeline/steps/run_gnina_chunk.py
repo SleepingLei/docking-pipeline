@@ -9,6 +9,45 @@ from rdkit import Chem
 from docking_pipeline.steps.common import ensure_dir, load_run_cfg, safe_float, write_csv
 
 
+def _first_mol_block_text(path: Path) -> str:
+    """
+    Read the first molecule block from an SDF file as text (up to and including the first '$$$$').
+    This avoids RDKit sanitization/KEKULIZE issues when preparing gnina inputs.
+    """
+    txt = path.read_text(encoding="utf-8", errors="replace")
+    lines = txt.splitlines()
+    if not lines:
+        raise ValueError(f"Empty SDF: {path}")
+    try:
+        end_i = next(i for i, ln in enumerate(lines) if ln.strip() == "$$$$")
+    except StopIteration as e:
+        raise ValueError(f"Missing '$$$$' terminator in SDF: {path}") from e
+    return "\n".join(lines[: end_i + 1]) + "\n"
+
+
+def _ensure_ligand_id_props(sdf_block: str, *, ligand_id: str) -> str:
+    """
+    Ensure:
+      1) first line (mol name) is ligand_id
+      2) SD property 'ligand_id' exists (so downstream parsing is stable)
+    """
+    lines = sdf_block.splitlines()
+    if not lines:
+        return sdf_block
+    lines[0] = ligand_id
+    has_prop = any(ln.strip() == ">  <ligand_id>" for ln in lines)
+    if has_prop:
+        return "\n".join(lines) + "\n"
+
+    try:
+        end_i = next(i for i, ln in enumerate(lines) if ln.strip() == "$$$$")
+    except StopIteration:
+        end_i = len(lines)
+    insert = [">  <ligand_id>", ligand_id, ""]
+    lines = lines[:end_i] + insert + lines[end_i:]
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Run gnina rescoring/minimize for one Uni-Mol chunk and summarize.")
     ap.add_argument("--run-yaml", type=Path, required=True)
@@ -31,20 +70,20 @@ def main() -> int:
     out_csv = gnina_dir / "summary.csv"
 
     # Merge unimol output SDFs into one multi-molecule input for gnina.
-    w = Chem.SDWriter(str(in_sdf))
+    sdf_paths = sorted(in_dir.glob("*.sdf"))
+    if not sdf_paths:
+        raise RuntimeError(f"No Uni-Mol output SDFs found under {in_dir}")
+
     count = 0
-    for p in sorted(in_dir.glob("*.sdf")):
-        sup = Chem.SDMolSupplier(str(p), removeHs=False)
-        for mol in sup:
-            if mol is None:
-                continue
-            lid = mol.GetProp("ligand_id") if mol.HasProp("ligand_id") else p.stem
-            mol.SetProp("_Name", lid)
-            mol.SetProp("ligand_id", lid)
-            w.write(mol)
+    with in_sdf.open("w", encoding="utf-8") as f:
+        for p in sdf_paths:
+            lid = p.stem
+            block = _first_mol_block_text(p)
+            block = _ensure_ligand_id_props(block, ligand_id=lid)
+            f.write(block)
+            if not block.rstrip().endswith("$$$$"):
+                f.write("$$$$\n")
             count += 1
-            break
-    w.close()
     if count == 0:
         raise RuntimeError(f"No Uni-Mol output SDFs found under {in_dir}")
 
@@ -71,23 +110,25 @@ def main() -> int:
         str(sy),
         "--size_z",
         str(sz),
-        "--cnn",
-        str(cfg.gnina.cnn),
         "--cpu",
         str(cfg.slurm.defaults.cpus_per_task),
     ]
+    if cfg.gnina.cnn:
+        cmd.extend(["--cnn", str(cfg.gnina.cnn)])
     if cfg.gnina.mode == "score_only":
         cmd.append("--score_only")
-    else:
+    elif cfg.gnina.mode == "minimize":
         cmd.append("--minimize")
-        cmd.extend(["-o", str(out_sdf)])
+    else:
+        raise ValueError(f"Unknown gnina.mode={cfg.gnina.mode!r}; expected 'score_only' or 'minimize'")
+    cmd.extend(["-o", str(out_sdf)])
 
     subprocess.run(cmd, check=True)
 
-    # Summarize output SDF properties (minimize path).
+    # Summarize output SDF properties.
     rows: list[dict[str, object]] = []
     if out_sdf.exists():
-        sup = Chem.SDMolSupplier(str(out_sdf), removeHs=False)
+        sup = Chem.SDMolSupplier(str(out_sdf), removeHs=False, sanitize=False)
         for mol in sup:
             if mol is None:
                 continue
@@ -112,4 +153,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

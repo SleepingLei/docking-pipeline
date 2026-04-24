@@ -10,11 +10,55 @@ from docking_pipeline.pipeline_config import DockingPipelineConfig
 from docking_pipeline.steps.common import ensure_dir, load_run_cfg, write_csv
 
 
-def _iter_sdf(sdf_path: Path):
-    # RDKit supplier keeps a file handle; do not convert to list for big SDFs.
-    supplier = Chem.SDMolSupplier(str(sdf_path), removeHs=False)
-    for idx, mol in enumerate(supplier):
-        yield idx, mol
+def _iter_sdf_blocks(sdf_path: Path):
+    """
+    Stream SDF records as raw text blocks (ending with '$$$$').
+
+    We intentionally avoid depending on RDKit's SDMolSupplier for input parsing because
+    some vendor SDFs trigger 'Bad input file' / sanitization issues on certain builds.
+    Uni-Dock2 can still often consume these records.
+    """
+    buf: list[str] = []
+    idx = 0
+    with sdf_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            buf.append(line)
+            if line.strip() == "$$$$":
+                yield idx, "".join(buf)
+                buf = []
+                idx += 1
+    if buf:
+        # Last record without terminator; still emit for debugging/manifest and to avoid silent drop.
+        yield idx, "".join(buf)
+
+
+def _ensure_ligand_id_props(sdf_block: str, *, ligand_id: str) -> str:
+    """
+    Ensure the record has:
+      1) first line (mol name) set to ligand_id
+      2) an SD property 'ligand_id' (so Uni-Dock2 outputs preserve it)
+      3) a '$$$$' terminator
+    """
+    lines = sdf_block.splitlines()
+    if not lines:
+        return f"{ligand_id}\n\n\n$$$$\n"
+    lines[0] = ligand_id
+    has_prop = any(ln.strip() == ">  <ligand_id>" for ln in lines)
+
+    # Ensure terminator exists and find insertion point.
+    end_i = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == "$$$$":
+            end_i = i
+            break
+    if end_i is None:
+        end_i = len(lines)
+        lines.append("$$$$")
+
+    if not has_prop:
+        insert = [">  <ligand_id>", ligand_id, ""]
+        lines = lines[:end_i] + insert + lines[end_i:]
+    return "\n".join(lines) + "\n"
 
 
 def main() -> int:
@@ -47,16 +91,16 @@ def main() -> int:
     next_chunk_id = 0
     current_chunk_id = -1
     in_chunk = 0
-    writer: Chem.SDWriter | None = None
+    chunk_fh = None
 
     def ensure_writer():
-        nonlocal next_chunk_id, current_chunk_id, in_chunk, writer
-        if writer is None or in_chunk >= chunk_size:
-            if writer is not None:
-                writer.close()
+        nonlocal next_chunk_id, current_chunk_id, in_chunk, chunk_fh
+        if chunk_fh is None or in_chunk >= chunk_size:
+            if chunk_fh is not None:
+                chunk_fh.close()
             current_chunk_id = next_chunk_id
             out_sdf_path = fast_chunks_dir / f"chunk{current_chunk_id}.sdf"
-            writer = Chem.SDWriter(str(out_sdf_path))
+            chunk_fh = out_sdf_path.open("w", encoding="utf-8")
             in_chunk = 0
             next_chunk_id += 1
 
@@ -71,33 +115,46 @@ def main() -> int:
         if not sdf_path.is_file():
             raise ValueError(f"Not a file: {sdf_path}")
 
-        for src_idx, mol in _iter_sdf(sdf_path):
+        for src_idx, block in _iter_sdf_blocks(sdf_path):
             ligand_id = f"LIG_{ligand_counter:012d}"
             ligand_counter += 1
 
-            if mol is None:
+            if not block.strip():
                 manifest_rows.append(
                     {
                         "ligand_id": ligand_id,
                         "source_sdf": str(sdf_path),
                         "source_mol_idx": src_idx,
-                        "status": "rdkit_none",
+                        "status": "empty_record",
                     }
                 )
                 continue
 
-            # Attach stable ID so Uni-Dock2 output SDF preserves it.
-            mol.SetProp("ligand_id", ligand_id)
-            if not mol.HasProp("_Name"):
-                mol.SetProp("_Name", ligand_id)
+            # Keep original name for manifest (first line of record).
+            orig_name = block.splitlines()[0].strip() if block.splitlines() else ""
 
+            # Attach stable ID so Uni-Dock2 output SDF preserves it.
+            out_block = _ensure_ligand_id_props(block, ligand_id=ligand_id)
+
+            smiles = ""
             try:
-                smiles = Chem.MolToSmiles(mol, canonical=True)
+                mol = Chem.MolFromMolBlock(block, sanitize=False, removeHs=False)
+                if mol is not None:
+                    # Try sanitize for canonical SMILES, but never fail the pipeline on it.
+                    try:
+                        Chem.SanitizeMol(mol)
+                    except Exception:
+                        pass
+                    try:
+                        smiles = Chem.MolToSmiles(mol, canonical=True)
+                    except Exception:
+                        smiles = ""
             except Exception:
                 smiles = ""
 
             ensure_writer()
-            writer.write(mol)
+            assert chunk_fh is not None
+            chunk_fh.write(out_block)
             in_chunk += 1
 
             manifest_rows.append(
@@ -107,14 +164,14 @@ def main() -> int:
                     "source_mol_idx": src_idx,
                     "prepared_chunk": int(current_chunk_id),
                     "smiles": smiles,
-                    "name": mol.GetProp("_Name") if mol.HasProp("_Name") else "",
+                    "name": orig_name,
                     "status": "ok",
                 }
             )
 
-    if writer is None:
+    if chunk_fh is None:
         raise RuntimeError("No valid ligands were written to any chunk; check input ligands SDF.")
-    writer.close()
+    chunk_fh.close()
 
     # Write manifest
     write_csv(

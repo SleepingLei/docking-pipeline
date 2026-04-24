@@ -101,7 +101,7 @@ def main() -> int:
         if args.submit_all:
             # Run the auto submit helper.
             os.environ.setdefault("RUN_DIR", str(run_dir))
-            subprocess.run(["bash", str(run_dir / "slurm" / "submit_workflow_auto.sh")], check=True)
+            subprocess.run(["bash", str(run_dir / "slurm" / "submit_workflow_deps.sh")], check=True)
         return 0
     if args.command == "submit":
         submit_run(args.run_dir)
