@@ -33,8 +33,6 @@ def _sbatch_header(
         lines.append(f"#SBATCH -A {account}")
     if gres:
         lines.append(f"#SBATCH --gres={gres}")
-    # SBATCH directives must appear before any executable commands.
-    lines.append("set -euo pipefail")
     return "\n".join(lines) + "\n"
 
 
@@ -46,6 +44,10 @@ def _python_env_exports(project_dir: Path) -> str:
         export PYTHONPATH="{project_dir}/src:${{PYTHONPATH:-}}"
         """
     )
+
+def _bash_prologue() -> str:
+    # Keep strict mode but avoid breaking SBATCH parsing by ensuring it comes after all directives.
+    return "set -euo pipefail\n"
 
 
 def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> dict[str, str]:
@@ -81,6 +83,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             account=acct,
             output=str(logs_dir / "00_prepare_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -102,6 +105,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             output=str(logs_dir / "10_unidock_fast_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -127,6 +131,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             account=acct,
             output=str(logs_dir / "11_select_fast_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -158,6 +163,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             output=str(logs_dir / "20_unidock_balance_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -183,6 +189,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             account=acct,
             output=str(logs_dir / "21_select_balance_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -214,6 +221,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             output=str(logs_dir / "30_unidock_detail_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -240,6 +248,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             account=acct,
             output=str(logs_dir / "40_cluster_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -264,6 +273,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             account=acct,
             output=str(logs_dir / "50_unimol_prepare_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -286,21 +296,14 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             output=str(logs_dir / "60_unimol_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            conda run -n {cfg.unimol.env_name} python "{cfg.unimol.repo_dir}/interface/demo.py" \\
-              --mode batch_one2many \\
-              --batch-size {cfg.unimol.batch_size} \\
-              --nthreads {defaults.cpus_per_task} \\
-              --conf-size {cfg.unimol.conf_size} \\
-              {"--cluster" if cfg.unimol.cluster_conformers else ""} \\
-              --input-protein "{cfg.inputs.receptor_pdb}" \\
-              --input-batch-file "{unimol_chunks_dir}/chunk_${{SLURM_ARRAY_TASK_ID}}/batch.csv" \\
-              --output-ligand-dir "{unimol_chunks_dir}/chunk_${{SLURM_ARRAY_TASK_ID}}/out_sdf" \\
-              {"--use_current_ligand_conf" if cfg.unimol.use_current_ligand_conf else ""} \\
-              {"--steric-clash-fix" if cfg.unimol.steric_clash_fix else ""} \\
-              --model-dir "{cfg.unimol.model_path}"
+            # Fault-tolerant wrapper: prevents one bad ligand from crashing the whole chunk.
+            conda run -n {cfg.unimol.env_name} python -m docking_pipeline.steps.run_unimol_chunk \\
+              --run-yaml "{run_yaml_path}" \\
+              --chunk-id "${{SLURM_ARRAY_TASK_ID:-0}}"
             """
         )
     )
@@ -317,12 +320,13 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             output=str(logs_dir / "70_gnina_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
             conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.run_gnina_chunk \\
               --run-yaml "{run_yaml_path}" \\
-              --chunk-id "${{SLURM_ARRAY_TASK_ID}}"
+              --chunk-id "${{SLURM_ARRAY_TASK_ID:-0}}"
             """
         )
     )
@@ -338,6 +342,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             account=acct,
             output=str(logs_dir / "80_finalize_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -720,6 +725,7 @@ def _render_submitter_fast(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             account=acct,
             output=str(logs_dir / "01_submit_fast_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -766,6 +772,7 @@ def _render_submitter_balance(cfg: DockingPipelineConfig, *, run_yaml_path: Path
             account=acct,
             output=str(logs_dir / "02_submit_balance_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -812,6 +819,7 @@ def _render_submitter_detail(cfg: DockingPipelineConfig, *, run_yaml_path: Path)
             account=acct,
             output=str(logs_dir / "03_submit_detail_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -854,6 +862,7 @@ def _render_submitter_cluster_unimol(cfg: DockingPipelineConfig, *, run_yaml_pat
             account=acct,
             output=str(logs_dir / "04_submit_cluster_unimol_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -896,6 +905,7 @@ def _render_submitter_unimol_array(cfg: DockingPipelineConfig, *, run_yaml_path:
             account=acct,
             output=str(logs_dir / "05_submit_unimol_array_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
@@ -938,6 +948,7 @@ def _render_submitter_gnina_finalize(cfg: DockingPipelineConfig, *, run_yaml_pat
             account=acct,
             output=str(logs_dir / "06_submit_gnina_finalize_%j.out"),
         )
+        + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
