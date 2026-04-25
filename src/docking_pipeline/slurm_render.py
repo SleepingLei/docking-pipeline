@@ -109,13 +109,25 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_fast/config.yaml" \\
-              -o "{run_dir}/unidock_fast/chunks/poses_${{SLURM_ARRAY_TASK_ID}}.sdf" \\
-              -l "{fast_chunks_dir}/chunk${{SLURM_ARRAY_TASK_ID}}.sdf"
+            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            poses="{run_dir}/unidock_fast/chunks/poses_${{task_id}}.sdf"
+            summary="{run_dir}/unidock_fast/chunk_summaries/summary_${{task_id}}.csv"
 
-            conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
-              --in-sdf "{run_dir}/unidock_fast/chunks/poses_${{SLURM_ARRAY_TASK_ID}}.sdf" \\
-              --out-csv "{run_dir}/unidock_fast/chunk_summaries/summary_${{SLURM_ARRAY_TASK_ID}}.csv"
+            if [[ -s "$poses" ]]; then
+              echo "[resume] fast poses exists: $poses"
+            else
+              conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_fast/config.yaml" \\
+                -o "$poses" \\
+                -l "{fast_chunks_dir}/chunk${{task_id}}.sdf"
+            fi
+
+            if [[ -s "$summary" ]]; then
+              echo "[resume] fast summary exists: $summary"
+            else
+              conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
+                --in-sdf "$poses" \\
+                --out-csv "$summary"
+            fi
             """
         )
     )
@@ -167,13 +179,25 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_balance/config.yaml" \\
-              -o "{run_dir}/unidock_balance/chunks/poses_${{SLURM_ARRAY_TASK_ID}}.sdf" \\
-              -l "{bal_chunks_dir}/chunk${{SLURM_ARRAY_TASK_ID}}.sdf"
+            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            poses="{run_dir}/unidock_balance/chunks/poses_${{task_id}}.sdf"
+            summary="{run_dir}/unidock_balance/chunk_summaries/summary_${{task_id}}.csv"
 
-            conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
-              --in-sdf "{run_dir}/unidock_balance/chunks/poses_${{SLURM_ARRAY_TASK_ID}}.sdf" \\
-              --out-csv "{run_dir}/unidock_balance/chunk_summaries/summary_${{SLURM_ARRAY_TASK_ID}}.csv"
+            if [[ -s "$poses" ]]; then
+              echo "[resume] balance poses exists: $poses"
+            else
+              conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_balance/config.yaml" \\
+                -o "$poses" \\
+                -l "{bal_chunks_dir}/chunk${{task_id}}.sdf"
+            fi
+
+            if [[ -s "$summary" ]]; then
+              echo "[resume] balance summary exists: $summary"
+            else
+              conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
+                --in-sdf "$poses" \\
+                --out-csv "$summary"
+            fi
             """
         )
     )
@@ -225,14 +249,27 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_detail/config.yaml" \\
-              -o "{run_dir}/unidock_detail/chunks/poses_${{SLURM_ARRAY_TASK_ID}}.sdf" \\
-              -l "{det_chunks_dir}/chunk${{SLURM_ARRAY_TASK_ID}}.sdf"
+            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            poses="{run_dir}/unidock_detail/chunks/poses_${{task_id}}.sdf"
+            summary="{run_dir}/unidock_detail/chunk_summaries/summary_${{task_id}}.csv"
+            best="{run_dir}/unidock_detail/best_poses/best_${{task_id}}.sdf"
 
-            conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
-              --in-sdf "{run_dir}/unidock_detail/chunks/poses_${{SLURM_ARRAY_TASK_ID}}.sdf" \\
-              --out-csv "{run_dir}/unidock_detail/chunk_summaries/summary_${{SLURM_ARRAY_TASK_ID}}.csv" \\
-              --out-best-sdf "{run_dir}/unidock_detail/best_poses/best_${{SLURM_ARRAY_TASK_ID}}.sdf"
+            if [[ -s "$poses" ]]; then
+              echo "[resume] detail poses exists: $poses"
+            else
+              conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_detail/config.yaml" \\
+                -o "$poses" \\
+                -l "{det_chunks_dir}/chunk${{task_id}}.sdf"
+            fi
+
+            if [[ -s "$summary" && -s "$best" ]]; then
+              echo "[resume] detail summary/best exists: $summary $best"
+            else
+              conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
+                --in-sdf "$poses" \\
+                --out-csv "$summary" \\
+                --out-best-sdf "$best"
+            fi
             """
         )
     )
@@ -324,9 +361,16 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
+            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            out_csv="{run_dir}/gnina/chunks/chunk_${{task_id}}/summary.csv"
+            if [[ -s "$out_csv" ]]; then
+              echo "[resume] gnina summary exists: $out_csv"
+              exit 0
+            fi
+
             conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.run_gnina_chunk \\
               --run-yaml "{run_yaml_path}" \\
-              --chunk-id "${{SLURM_ARRAY_TASK_ID:-0}}"
+              --chunk-id "$task_id"
             """
         )
     )
