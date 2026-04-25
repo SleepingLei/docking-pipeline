@@ -67,8 +67,21 @@ def _gpu_env_banner(*, task_id_var: str = "SLURM_ARRAY_TASK_ID") -> str:
         echo "[env] SLURM_JOB_GPUS=${{SLURM_JOB_GPUS:-}} CUDA_VISIBLE_DEVICES=${{CUDA_VISIBLE_DEVICES:-}}"
         ngpu="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
         echo "[env] nvidia-smi -L count=$ngpu"
-        if [[ "$ngpu" == "1" ]]; then
-          export CUDA_VISIBLE_DEVICES=0
+
+        # Many Slurm setups set CUDA_VISIBLE_DEVICES automatically. If not, try to derive it from
+        # Slurm-provided GPU ids so the program can safely use gpu_device_id=0 (first visible GPU).
+        if [[ -z "${{CUDA_VISIBLE_DEVICES:-}}" ]]; then
+          if [[ -n "${{SLURM_STEP_GPUS:-}}" ]]; then
+            export CUDA_VISIBLE_DEVICES="${{SLURM_STEP_GPUS}}"
+          elif [[ -n "${{SLURM_JOB_GPUS:-}}" ]]; then
+            export CUDA_VISIBLE_DEVICES="${{SLURM_JOB_GPUS}}"
+          elif [[ "$ngpu" == "1" ]]; then
+            export CUDA_VISIBLE_DEVICES=0
+          fi
+        fi
+        # Normalize possible formats like "gpu:3" -> "3"
+        if [[ -n "${{CUDA_VISIBLE_DEVICES:-}}" ]]; then
+          export CUDA_VISIBLE_DEVICES="$(echo "${{CUDA_VISIBLE_DEVICES}}" | sed 's/gpu://g; s/ //g')"
         fi
         echo "[env] effective CUDA_VISIBLE_DEVICES=${{CUDA_VISIBLE_DEVICES:-}}"
         """
