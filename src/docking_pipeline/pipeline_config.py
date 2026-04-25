@@ -153,6 +153,14 @@ class SlurmSection:
     gpu_partition_unidock2: str = "gpu_4090"
     gpu_partition_unimol: str = "gpu_h100"
     gpu_partition_gnina: str = "gpu_4090"
+    # If true, request node exclusivity for GPU jobs. Leave false for multi-GPU nodes
+    # so Slurm can pack up to (GPUs per node) jobs on a single node.
+    gpu_exclusive: bool = False
+    # Optional caps on how many array tasks can run concurrently (useful to match GPU capacity).
+    # Example: with 2 nodes * 8 GPUs/node, set unidock2=16 to keep GPUs saturated without flooding the queue.
+    max_parallel_unidock2: int | None = None
+    max_parallel_unimol: int | None = None
+    max_parallel_gnina: int | None = None
     defaults: SlurmDefaults = field(default_factory=SlurmDefaults)
 
 

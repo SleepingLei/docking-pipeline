@@ -127,7 +127,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres="gpu:1",
-            exclusive=True,
+            exclusive=cfg.slurm.gpu_exclusive,
             account=acct,
             output=str(logs_dir / "10_unidock_fast_%A_%a.out"),
         )
@@ -199,7 +199,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres="gpu:1",
-            exclusive=True,
+            exclusive=cfg.slurm.gpu_exclusive,
             account=acct,
             output=str(logs_dir / "20_unidock_balance_%A_%a.out"),
         )
@@ -271,7 +271,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres="gpu:1",
-            exclusive=True,
+            exclusive=cfg.slurm.gpu_exclusive,
             account=acct,
             output=str(logs_dir / "30_unidock_detail_%A_%a.out"),
         )
@@ -362,7 +362,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem="64G",
             gres="gpu:1",
-            exclusive=True,
+            exclusive=cfg.slurm.gpu_exclusive,
             account=acct,
             output=str(logs_dir / "60_unimol_%A_%a.out"),
         )
@@ -388,7 +388,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres="gpu:1",
-            exclusive=True,
+            exclusive=cfg.slurm.gpu_exclusive,
             account=acct,
             output=str(logs_dir / "70_gnina_%A_%a.out"),
         )
@@ -820,8 +820,13 @@ def _render_submitter_fast(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
               echo "[error] no fast chunks under inputs/fast/chunks" >&2
               exit 2
             fi
+            MAX_PAR={cfg.slurm.max_parallel_unidock2 if cfg.slurm.max_parallel_unidock2 is not None else -1}
+            arr="0-$((n-1))"
+            if [[ "$MAX_PAR" -gt 0 ]]; then
+              arr="$arr%$MAX_PAR"
+            fi
             echo "[deps] submit unidock fast array n=$n"
-            j_fast=$(sbatch --parsable --array=0-$((n-1)) slurm/10_unidock_fast_array.sbatch)
+            j_fast=$(sbatch --parsable --array="$arr" slurm/10_unidock_fast_array.sbatch)
             echo "$j_fast" > "$STATE_DIR/10_fast_array_jobid.txt"
             echo "  fast_array_jobid=$j_fast"
 
@@ -867,8 +872,13 @@ def _render_submitter_balance(cfg: DockingPipelineConfig, *, run_yaml_path: Path
               echo "[error] no balance chunks under inputs/balance/chunks" >&2
               exit 2
             fi
+            MAX_PAR={cfg.slurm.max_parallel_unidock2 if cfg.slurm.max_parallel_unidock2 is not None else -1}
+            arr="0-$((n-1))"
+            if [[ "$MAX_PAR" -gt 0 ]]; then
+              arr="$arr%$MAX_PAR"
+            fi
             echo "[deps] submit unidock balance array n=$n"
-            j_bal=$(sbatch --parsable --array=0-$((n-1)) slurm/20_unidock_balance_array.sbatch)
+            j_bal=$(sbatch --parsable --array="$arr" slurm/20_unidock_balance_array.sbatch)
             echo "$j_bal" > "$STATE_DIR/20_balance_array_jobid.txt"
             echo "  balance_array_jobid=$j_bal"
 
@@ -914,8 +924,13 @@ def _render_submitter_detail(cfg: DockingPipelineConfig, *, run_yaml_path: Path)
               echo "[error] no detail chunks under inputs/detail/chunks" >&2
               exit 2
             fi
+            MAX_PAR={cfg.slurm.max_parallel_unidock2 if cfg.slurm.max_parallel_unidock2 is not None else -1}
+            arr="0-$((n-1))"
+            if [[ "$MAX_PAR" -gt 0 ]]; then
+              arr="$arr%$MAX_PAR"
+            fi
             echo "[deps] submit unidock detail array n=$n"
-            j_det=$(sbatch --parsable --array=0-$((n-1)) slurm/30_unidock_detail_array.sbatch)
+            j_det=$(sbatch --parsable --array="$arr" slurm/30_unidock_detail_array.sbatch)
             echo "$j_det" > "$STATE_DIR/30_detail_array_jobid.txt"
             echo "  detail_array_jobid=$j_det"
 
@@ -1000,8 +1015,13 @@ def _render_submitter_unimol_array(cfg: DockingPipelineConfig, *, run_yaml_path:
               echo "[error] no unimol chunks under unimol/chunks" >&2
               exit 2
             fi
+            MAX_PAR={cfg.slurm.max_parallel_unimol if cfg.slurm.max_parallel_unimol is not None else -1}
+            arr="0-$((n-1))"
+            if [[ "$MAX_PAR" -gt 0 ]]; then
+              arr="$arr%$MAX_PAR"
+            fi
             echo "[deps] submit unimol array n=$n"
-            j_um=$(sbatch --parsable --array=0-$((n-1)) slurm/60_unimol_array.sbatch)
+            j_um=$(sbatch --parsable --array="$arr" slurm/60_unimol_array.sbatch)
             echo "$j_um" > "$STATE_DIR/60_unimol_array_jobid.txt"
             echo "  unimol_array_jobid=$j_um"
 
@@ -1043,9 +1063,14 @@ def _render_submitter_gnina_finalize(cfg: DockingPipelineConfig, *, run_yaml_pat
               echo "[error] no unimol chunks under unimol/chunks" >&2
               exit 2
             fi
+            MAX_PAR={cfg.slurm.max_parallel_gnina if cfg.slurm.max_parallel_gnina is not None else -1}
+            arr="0-$((n-1))"
+            if [[ "$MAX_PAR" -gt 0 ]]; then
+              arr="$arr%$MAX_PAR"
+            fi
 
             echo "[deps] submit gnina array n=$n"
-            j_gn=$(sbatch --parsable --array=0-$((n-1)) slurm/70_gnina_array.sbatch)
+            j_gn=$(sbatch --parsable --array="$arr" slurm/70_gnina_array.sbatch)
             echo "$j_gn" > "$STATE_DIR/70_gnina_array_jobid.txt"
             echo "  gnina_array_jobid=$j_gn"
 
