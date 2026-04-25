@@ -14,6 +14,7 @@ def _sbatch_header(
     cpus_per_task: int,
     mem: str,
     gres: str | None,
+    exclusive: bool = False,
     account: str | None,
     output: str,
 ) -> str:
@@ -33,6 +34,8 @@ def _sbatch_header(
         lines.append(f"#SBATCH -A {account}")
     if gres:
         lines.append(f"#SBATCH --gres={gres}")
+    if exclusive:
+        lines.append("#SBATCH --exclusive")
     return "\n".join(lines) + "\n"
 
 
@@ -48,6 +51,28 @@ def _python_env_exports(project_dir: Path) -> str:
 def _bash_prologue() -> str:
     # Keep strict mode but avoid breaking SBATCH parsing by ensuring it comes after all directives.
     return "set -euo pipefail\n"
+
+def _gpu_env_banner(*, task_id_var: str = "SLURM_ARRAY_TASK_ID") -> str:
+    """
+    Small, cheap runtime banner for debugging GPU visibility.
+
+    We intentionally do not rely solely on Slurm's GPU binding, because some clusters may oversubscribe
+    or misreport GPU counts. If the node only has 1 GPU, force CUDA_VISIBLE_DEVICES=0 for stability.
+    """
+    return textwrap.dedent(
+        f"""\
+        task_id="${{{task_id_var}:-0}}"
+        echo "[env] host=$(hostname) task_id=$task_id"
+        echo "[env] SLURM_JOB_ID=${{SLURM_JOB_ID:-}} SLURM_ARRAY_TASK_ID=${{{task_id_var}:-}}"
+        echo "[env] SLURM_JOB_GPUS=${{SLURM_JOB_GPUS:-}} CUDA_VISIBLE_DEVICES=${{CUDA_VISIBLE_DEVICES:-}}"
+        ngpu="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
+        echo "[env] nvidia-smi -L count=$ngpu"
+        if [[ "$ngpu" == "1" ]]; then
+          export CUDA_VISIBLE_DEVICES=0
+        fi
+        echo "[env] effective CUDA_VISIBLE_DEVICES=${{CUDA_VISIBLE_DEVICES:-}}"
+        """
+    )
 
 
 def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> dict[str, str]:
@@ -80,6 +105,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres=None,
+            exclusive=False,
             account=acct,
             output=str(logs_dir / "00_prepare_%j.out"),
         )
@@ -101,15 +127,16 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres="gpu:1",
+            exclusive=True,
             account=acct,
             output=str(logs_dir / "10_unidock_fast_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _gpu_env_banner()
         + textwrap.dedent(
             f"""\
-            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
             poses="{run_dir}/unidock_fast/chunks/poses_${{task_id}}.sdf"
             summary="{run_dir}/unidock_fast/chunk_summaries/summary_${{task_id}}.csv"
 
@@ -140,6 +167,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres=None,
+            exclusive=False,
             account=acct,
             output=str(logs_dir / "11_select_fast_%j.out"),
         )
@@ -171,15 +199,16 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres="gpu:1",
+            exclusive=True,
             account=acct,
             output=str(logs_dir / "20_unidock_balance_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _gpu_env_banner()
         + textwrap.dedent(
             f"""\
-            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
             poses="{run_dir}/unidock_balance/chunks/poses_${{task_id}}.sdf"
             summary="{run_dir}/unidock_balance/chunk_summaries/summary_${{task_id}}.csv"
 
@@ -210,6 +239,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres=None,
+            exclusive=False,
             account=acct,
             output=str(logs_dir / "21_select_balance_%j.out"),
         )
@@ -241,15 +271,16 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres="gpu:1",
+            exclusive=True,
             account=acct,
             output=str(logs_dir / "30_unidock_detail_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _gpu_env_banner()
         + textwrap.dedent(
             f"""\
-            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
             poses="{run_dir}/unidock_detail/chunks/poses_${{task_id}}.sdf"
             summary="{run_dir}/unidock_detail/chunk_summaries/summary_${{task_id}}.csv"
             best="{run_dir}/unidock_detail/best_poses/best_${{task_id}}.sdf"
@@ -282,6 +313,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres=None,
+            exclusive=False,
             account=acct,
             output=str(logs_dir / "40_cluster_%j.out"),
         )
@@ -307,6 +339,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres=None,
+            exclusive=False,
             account=acct,
             output=str(logs_dir / "50_unimol_prepare_%j.out"),
         )
@@ -329,12 +362,14 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem="64G",
             gres="gpu:1",
+            exclusive=True,
             account=acct,
             output=str(logs_dir / "60_unimol_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _gpu_env_banner()
         + textwrap.dedent(
             f"""\
             # Fault-tolerant wrapper: prevents one bad ligand from crashing the whole chunk.
@@ -353,15 +388,16 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres="gpu:1",
+            exclusive=True,
             account=acct,
             output=str(logs_dir / "70_gnina_%A_%a.out"),
         )
         + "#SBATCH --array=0-0\n"
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _gpu_env_banner()
         + textwrap.dedent(
             f"""\
-            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
             out_csv="{run_dir}/gnina/chunks/chunk_${{task_id}}/summary.csv"
             if [[ -s "$out_csv" ]]; then
               echo "[resume] gnina summary exists: $out_csv"
@@ -383,6 +419,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
             gres=None,
+            exclusive=False,
             account=acct,
             output=str(logs_dir / "80_finalize_%j.out"),
         )
