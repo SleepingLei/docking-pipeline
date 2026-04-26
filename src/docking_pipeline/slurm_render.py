@@ -207,7 +207,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             if [[ -s "$poses" ]]; then
               echo "[resume] fast poses exists: $poses"
             else
-              tmp="${poses}.tmp.${SLURM_JOB_ID:-}.${task_id}"
+              tmp="${{poses}}.tmp.${{SLURM_JOB_ID:-}}.${{task_id}}"
               {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
               {_task_local_unidock_cfg_snippet(config_path=str(run_dir / "unidock_fast" / "config.yaml"), stage_tag="ud2_fast").rstrip()}
               conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "$task_cfg" \\
@@ -313,7 +313,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             if [[ -s "$poses" ]]; then
               echo "[resume] balance poses exists: $poses"
             else
-              tmp="${poses}.tmp.${SLURM_JOB_ID:-}.${task_id}"
+              tmp="${{poses}}.tmp.${{SLURM_JOB_ID:-}}.${{task_id}}"
               {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
               {_task_local_unidock_cfg_snippet(config_path=str(run_dir / "unidock_balance" / "config.yaml"), stage_tag="ud2_balance").rstrip()}
               conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "$task_cfg" \\
@@ -419,7 +419,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             if [[ -s "$poses" ]]; then
               echo "[resume] detail poses exists: $poses"
             else
-              tmp="${poses}.tmp.${SLURM_JOB_ID:-}.${task_id}"
+              tmp="${{poses}}.tmp.${{SLURM_JOB_ID:-}}.${{task_id}}"
               {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
               {_task_local_unidock_cfg_snippet(config_path=str(run_dir / "unidock_detail" / "config.yaml"), stage_tag="ud2_detail").rstrip()}
               conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "$task_cfg" \\
