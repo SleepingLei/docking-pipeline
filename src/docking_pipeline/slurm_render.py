@@ -87,6 +87,40 @@ def _gpu_env_banner(*, task_id_var: str = "SLURM_ARRAY_TASK_ID") -> str:
         """
     )
 
+def _chunk_lock_snippet(*, lock_key: str, task_id_var: str = "SLURM_ARRAY_TASK_ID") -> str:
+    """
+    Avoid duplicate computation for the same chunk output when a job is accidentally resubmitted.
+
+    We use a lock *directory* (mkdir is atomic) so we don't rely on `flock` availability.
+    If the lock exists but its recorded PID is no longer alive, we treat it as stale and replace it.
+    """
+    return textwrap.dedent(
+        f"""\
+        lockdir="{lock_key}.lockdir"
+        if mkdir "$lockdir" 2>/dev/null; then
+          echo "$$" > "$lockdir/pid"
+          echo "${{SLURM_JOB_ID:-}}" > "$lockdir/slurm_job_id"
+          echo "${{{task_id_var}:-}}" > "$lockdir/array_task_id"
+        else
+          stale=1
+          if [[ -f "$lockdir/pid" ]]; then
+            oldpid="$(cat "$lockdir/pid" 2>/dev/null | tr -d ' ')"
+            if [[ -n "$oldpid" ]] && kill -0 "$oldpid" 2>/dev/null; then
+              echo "[resume] lock exists for {lock_key} (pid=$oldpid). Exiting."
+              exit 0
+            fi
+          fi
+          echo "[resume] stale lock exists for {lock_key}. Replacing."
+          rm -rf "$lockdir" || true
+          mkdir "$lockdir"
+          echo "$$" > "$lockdir/pid"
+          echo "${{SLURM_JOB_ID:-}}" > "$lockdir/slurm_job_id"
+          echo "${{{task_id_var}:-}}" > "$lockdir/array_task_id"
+        fi
+        trap 'rm -rf "$lockdir" || true' EXIT
+        """
+    )
+
 
 def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> dict[str, str]:
     run_dir = cfg.run.work_dir
@@ -156,9 +190,12 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             if [[ -s "$poses" ]]; then
               echo "[resume] fast poses exists: $poses"
             else
+              tmp="${poses}.tmp.${SLURM_JOB_ID:-}.${task_id}"
+              {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
               conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_fast/config.yaml" \\
-                -o "$poses" \\
+                -o "$tmp" \\
                 -l "{fast_chunks_dir}/chunk${{task_id}}.sdf"
+              mv -f "$tmp" "$poses"
             fi
 
             if [[ -s "$summary" ]]; then
@@ -228,9 +265,12 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             if [[ -s "$poses" ]]; then
               echo "[resume] balance poses exists: $poses"
             else
+              tmp="${poses}.tmp.${SLURM_JOB_ID:-}.${task_id}"
+              {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
               conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_balance/config.yaml" \\
-                -o "$poses" \\
+                -o "$tmp" \\
                 -l "{bal_chunks_dir}/chunk${{task_id}}.sdf"
+              mv -f "$tmp" "$poses"
             fi
 
             if [[ -s "$summary" ]]; then
@@ -301,9 +341,12 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             if [[ -s "$poses" ]]; then
               echo "[resume] detail poses exists: $poses"
             else
+              tmp="${poses}.tmp.${SLURM_JOB_ID:-}.${task_id}"
+              {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
               conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_detail/config.yaml" \\
-                -o "$poses" \\
+                -o "$tmp" \\
                 -l "{det_chunks_dir}/chunk${{task_id}}.sdf"
+              mv -f "$tmp" "$poses"
             fi
 
             if [[ -s "$summary" && -s "$best" ]]; then
