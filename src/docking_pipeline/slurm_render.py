@@ -140,6 +140,52 @@ def _task_local_unidock_cfg_snippet(*, config_path: str, stage_tag: str) -> str:
     )
 
 
+def _unidock_progress_watchdog_snippet(*, timeout_minutes: int, check_interval_minutes: int) -> str:
+    timeout_secs = timeout_minutes * 60
+    interval_secs = check_interval_minutes * 60
+    return textwrap.dedent(
+        f"""\
+        monitor_unidock_progress() {{
+          local pid="$1"
+          local watch_dir="$2"
+          local last_sig=""
+          local last_change
+          local timeout_secs={timeout_secs}
+          local interval_secs={interval_secs}
+
+          last_change="$(date +%s)"
+          while kill -0 "$pid" 2>/dev/null; do
+            local size files sig now idle
+            if [[ -d "$watch_dir" ]]; then
+              size="$(du -sb "$watch_dir" 2>/dev/null | awk '{{print $1}}')"
+              files="$(find "$watch_dir" -type f 2>/dev/null | wc -l | tr -d ' ')"
+            else
+              size=0
+              files=0
+            fi
+            sig="${{size}}:${{files}}"
+            if [[ "$sig" != "$last_sig" ]]; then
+              last_sig="$sig"
+              last_change="$(date +%s)"
+              echo "[watchdog] progress sig=$sig"
+            fi
+
+            now="$(date +%s)"
+            idle=$((now - last_change))
+            if (( idle >= timeout_secs )); then
+              echo "[watchdog] no tmpdir progress for $idle sec in $watch_dir; terminating pid=$pid" >&2
+              kill -TERM "$pid" 2>/dev/null || true
+              sleep 30
+              kill -KILL "$pid" 2>/dev/null || true
+              break
+            fi
+            sleep "$interval_secs"
+          done
+        }}
+        """
+    )
+
+
 def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> dict[str, str]:
     run_dir = cfg.run.work_dir
     logs_dir = run_dir / "logs"
@@ -210,9 +256,21 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
               tmp="${{poses}}.tmp.${{SLURM_JOB_ID:-}}.${{task_id}}"
               {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
               {_task_local_unidock_cfg_snippet(config_path=str(run_dir / "unidock_fast" / "config.yaml"), stage_tag="ud2_fast").rstrip()}
+              {_unidock_progress_watchdog_snippet(timeout_minutes=cfg.unidock2.no_progress_timeout_minutes, check_interval_minutes=cfg.unidock2.progress_check_interval_minutes).rstrip()}
+              dock_rc=0
               conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "$task_cfg" \\
                 -o "$tmp" \\
-                -l "{fast_chunks_dir}/chunk${{task_id}}.sdf"
+                -l "{fast_chunks_dir}/chunk${{task_id}}.sdf" &
+              dock_pid=$!
+              monitor_unidock_progress "$dock_pid" "$task_tmpdir" &
+              watchdog_pid=$!
+              wait "$dock_pid" || dock_rc=$?
+              kill "$watchdog_pid" 2>/dev/null || true
+              wait "$watchdog_pid" 2>/dev/null || true
+              if [[ "$dock_rc" -ne 0 ]]; then
+                echo "[error] unidock2 fast exited rc=$dock_rc" >&2
+                exit "$dock_rc"
+              fi
               mv -f "$tmp" "$poses"
               rm -f "$task_cfg"
               rm -rf "$task_tmpdir"
@@ -316,9 +374,21 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
               tmp="${{poses}}.tmp.${{SLURM_JOB_ID:-}}.${{task_id}}"
               {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
               {_task_local_unidock_cfg_snippet(config_path=str(run_dir / "unidock_balance" / "config.yaml"), stage_tag="ud2_balance").rstrip()}
+              {_unidock_progress_watchdog_snippet(timeout_minutes=cfg.unidock2.no_progress_timeout_minutes, check_interval_minutes=cfg.unidock2.progress_check_interval_minutes).rstrip()}
+              dock_rc=0
               conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "$task_cfg" \\
                 -o "$tmp" \\
-                -l "{bal_chunks_dir}/chunk${{task_id}}.sdf"
+                -l "{bal_chunks_dir}/chunk${{task_id}}.sdf" &
+              dock_pid=$!
+              monitor_unidock_progress "$dock_pid" "$task_tmpdir" &
+              watchdog_pid=$!
+              wait "$dock_pid" || dock_rc=$?
+              kill "$watchdog_pid" 2>/dev/null || true
+              wait "$watchdog_pid" 2>/dev/null || true
+              if [[ "$dock_rc" -ne 0 ]]; then
+                echo "[error] unidock2 balance exited rc=$dock_rc" >&2
+                exit "$dock_rc"
+              fi
               mv -f "$tmp" "$poses"
               rm -f "$task_cfg"
               rm -rf "$task_tmpdir"
@@ -422,9 +492,21 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
               tmp="${{poses}}.tmp.${{SLURM_JOB_ID:-}}.${{task_id}}"
               {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
               {_task_local_unidock_cfg_snippet(config_path=str(run_dir / "unidock_detail" / "config.yaml"), stage_tag="ud2_detail").rstrip()}
+              {_unidock_progress_watchdog_snippet(timeout_minutes=cfg.unidock2.no_progress_timeout_minutes, check_interval_minutes=cfg.unidock2.progress_check_interval_minutes).rstrip()}
+              dock_rc=0
               conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "$task_cfg" \\
                 -o "$tmp" \\
-                -l "{det_chunks_dir}/chunk${{task_id}}.sdf"
+                -l "{det_chunks_dir}/chunk${{task_id}}.sdf" &
+              dock_pid=$!
+              monitor_unidock_progress "$dock_pid" "$task_tmpdir" &
+              watchdog_pid=$!
+              wait "$dock_pid" || dock_rc=$?
+              kill "$watchdog_pid" 2>/dev/null || true
+              wait "$watchdog_pid" 2>/dev/null || true
+              if [[ "$dock_rc" -ne 0 ]]; then
+                echo "[error] unidock2 detail exited rc=$dock_rc" >&2
+                exit "$dock_rc"
+              fi
               mv -f "$tmp" "$poses"
               rm -f "$task_cfg"
               rm -rf "$task_tmpdir"

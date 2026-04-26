@@ -96,6 +96,8 @@ class UniDock2Section:
     rmsd_limit: float = 1.0
     energy_range: float = 5.0
     temp_dir: str = "/tmp"
+    no_progress_timeout_minutes: int = 90
+    progress_check_interval_minutes: int = 5
     stages: dict[str, UniDock2StageSection] = field(default_factory=dict)
 
 
@@ -273,6 +275,10 @@ def _validate(cfg: DockingPipelineConfig) -> None:
             raise ValueError(f"unidock2 stage {name} has invalid search_mode={stage.search_mode!r}")
         if stage.chunk_size <= 0:
             raise ValueError(f"unidock2 stage {name} chunk_size must be > 0")
+    if cfg.unidock2.no_progress_timeout_minutes <= 0:
+        raise ValueError("unidock2.no_progress_timeout_minutes must be > 0")
+    if cfg.unidock2.progress_check_interval_minutes <= 0:
+        raise ValueError("unidock2.progress_check_interval_minutes must be > 0")
 
 
 def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
@@ -322,6 +328,8 @@ def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
         rmsd_limit=float(ud_d.get("rmsd_limit", 1.0)),
         energy_range=float(ud_d.get("energy_range", 5.0)),
         temp_dir=str(ud_d.get("temp_dir", "/tmp")),
+        no_progress_timeout_minutes=int(ud_d.get("no_progress_timeout_minutes", 90)),
+        progress_check_interval_minutes=int(ud_d.get("progress_check_interval_minutes", 5)),
         stages=stages,
     )
 
