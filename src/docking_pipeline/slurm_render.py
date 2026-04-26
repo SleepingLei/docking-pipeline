@@ -122,6 +122,24 @@ def _chunk_lock_snippet(*, lock_key: str, task_id_var: str = "SLURM_ARRAY_TASK_I
     )
 
 
+def _task_local_unidock_cfg_snippet(*, config_path: str, stage_tag: str) -> str:
+    """
+    Build a per-task UniDock config that points temp_dir_name at a unique local /tmp directory.
+
+    This avoids cross-task contention in a shared temp directory and keeps heavy temporary IO off GPFS.
+    """
+    return textwrap.dedent(
+        f"""\
+        task_tmpdir="/tmp/docking_pipeline_{stage_tag}_${{SLURM_JOB_ID:-nojob}}_${{task_id}}"
+        task_cfg="/tmp/docking_pipeline_{stage_tag}_${{SLURM_JOB_ID:-nojob}}_${{task_id}}.yaml"
+        mkdir -p "$task_tmpdir"
+        sed -E 's|^([[:space:]]*temp_dir_name:).*|\\1 "'"$task_tmpdir"'"|' "{config_path}" > "$task_cfg"
+        echo "[env] task_tmpdir=$task_tmpdir"
+        echo "[env] task_cfg=$task_cfg"
+        """
+    )
+
+
 def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> dict[str, str]:
     run_dir = cfg.run.work_dir
     logs_dir = run_dir / "logs"
@@ -185,26 +203,57 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + textwrap.dedent(
             f"""\
             poses="{run_dir}/unidock_fast/chunks/poses_${{task_id}}.sdf"
-            summary="{run_dir}/unidock_fast/chunk_summaries/summary_${{task_id}}.csv"
 
             if [[ -s "$poses" ]]; then
               echo "[resume] fast poses exists: $poses"
             else
               tmp="${poses}.tmp.${SLURM_JOB_ID:-}.${task_id}"
               {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
-              conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_fast/config.yaml" \\
+              {_task_local_unidock_cfg_snippet(config_path=str(run_dir / "unidock_fast" / "config.yaml"), stage_tag="ud2_fast").rstrip()}
+              conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "$task_cfg" \\
                 -o "$tmp" \\
                 -l "{fast_chunks_dir}/chunk${{task_id}}.sdf"
               mv -f "$tmp" "$poses"
+              rm -f "$task_cfg"
+              rm -rf "$task_tmpdir"
             fi
+            """
+        )
+    )
+
+    scripts["slurm/12_summarize_fast_array.sbatch"] = (
+        _sbatch_header(
+            job_name=f"{cfg.run.name}_sum_fast",
+            partition=cfg.slurm.cpu_partition,
+            time=defaults.time,
+            cpus_per_task=defaults.cpus_per_task,
+            mem=defaults.mem,
+            gres=None,
+            exclusive=False,
+            account=acct,
+            output=str(logs_dir / "12_summarize_fast_%A_%a.out"),
+        )
+        + "#SBATCH --array=0-0\n"
+        + _bash_prologue()
+        + _python_env_exports(cfg.run.project_dir)
+        + textwrap.dedent(
+            f"""\
+            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            poses="{run_dir}/unidock_fast/chunks/poses_${{task_id}}.sdf"
+            summary="{run_dir}/unidock_fast/chunk_summaries/summary_${{task_id}}.csv"
 
             if [[ -s "$summary" ]]; then
               echo "[resume] fast summary exists: $summary"
-            else
-              conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
-                --in-sdf "$poses" \\
-                --out-csv "$summary"
+              exit 0
             fi
+            if [[ ! -s "$poses" ]]; then
+              echo "[error] fast poses missing: $poses" >&2
+              exit 2
+            fi
+
+            conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
+              --in-sdf "$poses" \\
+              --out-csv "$summary"
             """
         )
     )
@@ -260,26 +309,57 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + textwrap.dedent(
             f"""\
             poses="{run_dir}/unidock_balance/chunks/poses_${{task_id}}.sdf"
-            summary="{run_dir}/unidock_balance/chunk_summaries/summary_${{task_id}}.csv"
 
             if [[ -s "$poses" ]]; then
               echo "[resume] balance poses exists: $poses"
             else
               tmp="${poses}.tmp.${SLURM_JOB_ID:-}.${task_id}"
               {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
-              conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_balance/config.yaml" \\
+              {_task_local_unidock_cfg_snippet(config_path=str(run_dir / "unidock_balance" / "config.yaml"), stage_tag="ud2_balance").rstrip()}
+              conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "$task_cfg" \\
                 -o "$tmp" \\
                 -l "{bal_chunks_dir}/chunk${{task_id}}.sdf"
               mv -f "$tmp" "$poses"
+              rm -f "$task_cfg"
+              rm -rf "$task_tmpdir"
             fi
+            """
+        )
+    )
+
+    scripts["slurm/22_summarize_balance_array.sbatch"] = (
+        _sbatch_header(
+            job_name=f"{cfg.run.name}_sum_bal",
+            partition=cfg.slurm.cpu_partition,
+            time=defaults.time,
+            cpus_per_task=defaults.cpus_per_task,
+            mem=defaults.mem,
+            gres=None,
+            exclusive=False,
+            account=acct,
+            output=str(logs_dir / "22_summarize_balance_%A_%a.out"),
+        )
+        + "#SBATCH --array=0-0\n"
+        + _bash_prologue()
+        + _python_env_exports(cfg.run.project_dir)
+        + textwrap.dedent(
+            f"""\
+            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            poses="{run_dir}/unidock_balance/chunks/poses_${{task_id}}.sdf"
+            summary="{run_dir}/unidock_balance/chunk_summaries/summary_${{task_id}}.csv"
 
             if [[ -s "$summary" ]]; then
               echo "[resume] balance summary exists: $summary"
-            else
-              conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
-                --in-sdf "$poses" \\
-                --out-csv "$summary"
+              exit 0
             fi
+            if [[ ! -s "$poses" ]]; then
+              echo "[error] balance poses missing: $poses" >&2
+              exit 2
+            fi
+
+            conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
+              --in-sdf "$poses" \\
+              --out-csv "$summary"
             """
         )
     )
@@ -335,28 +415,59 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + textwrap.dedent(
             f"""\
             poses="{run_dir}/unidock_detail/chunks/poses_${{task_id}}.sdf"
-            summary="{run_dir}/unidock_detail/chunk_summaries/summary_${{task_id}}.csv"
-            best="{run_dir}/unidock_detail/best_poses/best_${{task_id}}.sdf"
 
             if [[ -s "$poses" ]]; then
               echo "[resume] detail poses exists: $poses"
             else
               tmp="${poses}.tmp.${SLURM_JOB_ID:-}.${task_id}"
               {_chunk_lock_snippet(lock_key='${poses}', task_id_var='task_id').rstrip()}
-              conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "{run_dir}/unidock_detail/config.yaml" \\
+              {_task_local_unidock_cfg_snippet(config_path=str(run_dir / "unidock_detail" / "config.yaml"), stage_tag="ud2_detail").rstrip()}
+              conda run -n {cfg.unidock2.env_name} unidock2 docking -cf "$task_cfg" \\
                 -o "$tmp" \\
                 -l "{det_chunks_dir}/chunk${{task_id}}.sdf"
               mv -f "$tmp" "$poses"
+              rm -f "$task_cfg"
+              rm -rf "$task_tmpdir"
             fi
+            """
+        )
+    )
+
+    scripts["slurm/31_summarize_detail_array.sbatch"] = (
+        _sbatch_header(
+            job_name=f"{cfg.run.name}_sum_det",
+            partition=cfg.slurm.cpu_partition,
+            time=defaults.time,
+            cpus_per_task=defaults.cpus_per_task,
+            mem=defaults.mem,
+            gres=None,
+            exclusive=False,
+            account=acct,
+            output=str(logs_dir / "31_summarize_detail_%A_%a.out"),
+        )
+        + "#SBATCH --array=0-0\n"
+        + _bash_prologue()
+        + _python_env_exports(cfg.run.project_dir)
+        + textwrap.dedent(
+            f"""\
+            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            poses="{run_dir}/unidock_detail/chunks/poses_${{task_id}}.sdf"
+            summary="{run_dir}/unidock_detail/chunk_summaries/summary_${{task_id}}.csv"
+            best="{run_dir}/unidock_detail/best_poses/best_${{task_id}}.sdf"
 
             if [[ -s "$summary" && -s "$best" ]]; then
               echo "[resume] detail summary/best exists: $summary $best"
-            else
-              conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
-                --in-sdf "$poses" \\
-                --out-csv "$summary" \\
-                --out-best-sdf "$best"
+              exit 0
             fi
+            if [[ ! -s "$poses" ]]; then
+              echo "[error] detail poses missing: $poses" >&2
+              exit 2
+            fi
+
+            conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
+              --in-sdf "$poses" \\
+              --out-csv "$summary" \\
+              --out-best-sdf "$best"
             """
         )
     )
@@ -547,16 +658,19 @@ def _render_submit_script(cfg: DockingPipelineConfig, *, run_yaml_path: Path) ->
         echo "# Uni-Dock2 fast"
         echo "  n=\\$(ls -1 inputs/fast/chunks/chunk*.sdf | wc -l)"
         echo "  sbatch --array=0-\\$((n-1)) slurm/10_unidock_fast_array.sbatch"
+        echo "  sbatch --array=0-\\$((n-1)) slurm/12_summarize_fast_array.sbatch"
         echo "  sbatch slurm/11_select_fast_top.sbatch"
         echo
         echo "# Uni-Dock2 balance"
         echo "  n=\\$(ls -1 inputs/balance/chunks/chunk*.sdf | wc -l)"
         echo "  sbatch --array=0-\\$((n-1)) slurm/20_unidock_balance_array.sbatch"
+        echo "  sbatch --array=0-\\$((n-1)) slurm/22_summarize_balance_array.sbatch"
         echo "  sbatch slurm/21_select_balance_top.sbatch"
         echo
         echo "# Uni-Dock2 detail"
         echo "  n=\\$(ls -1 inputs/detail/chunks/chunk*.sdf | wc -l)"
         echo "  sbatch --array=0-\\$((n-1)) slurm/30_unidock_detail_array.sbatch"
+        echo "  sbatch --array=0-\\$((n-1)) slurm/31_summarize_detail_array.sbatch"
         echo
         echo "# Clustering"
         echo "  sbatch slurm/40_cluster_select.sbatch"
@@ -697,6 +811,9 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
           j1="$(submit "slurm/10_unidock_fast_array.sbatch" --array=0-$((n_fast-1)))"
           echo "  jobid=$j1"
           wait_job "$j1"
+          j1s="$(submit "slurm/12_summarize_fast_array.sbatch" --array=0-$((n_fast-1)))"
+          echo "  summarize_jobid=$j1s"
+          wait_job "$j1s"
         fi
 
         echo "[auto] 11_select_fast_top"
@@ -721,6 +838,9 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
           j3="$(submit "slurm/20_unidock_balance_array.sbatch" --array=0-$((n_bal-1)))"
           echo "  jobid=$j3"
           wait_job "$j3"
+          j3s="$(submit "slurm/22_summarize_balance_array.sbatch" --array=0-$((n_bal-1)))"
+          echo "  summarize_jobid=$j3s"
+          wait_job "$j3s"
         fi
 
         echo "[auto] 21_select_balance_top"
@@ -745,6 +865,9 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
           j5="$(submit "slurm/30_unidock_detail_array.sbatch" --array=0-$((n_det-1)))"
           echo "  jobid=$j5"
           wait_job "$j5"
+          j5s="$(submit "slurm/31_summarize_detail_array.sbatch" --array=0-$((n_det-1)))"
+          echo "  summarize_jobid=$j5s"
+          wait_job "$j5s"
         fi
 
         echo "[auto] 40_cluster_select"
@@ -886,7 +1009,11 @@ def _render_submitter_fast(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             echo "$j_fast" > "$STATE_DIR/10_fast_array_jobid.txt"
             echo "  fast_array_jobid=$j_fast"
 
-            j_sel=$(sbatch --parsable --dependency=afterok:"$j_fast" slurm/11_select_fast_top.sbatch)
+            j_sum=$(sbatch --parsable --dependency=afterok:"$j_fast" --array="$arr" slurm/12_summarize_fast_array.sbatch)
+            echo "$j_sum" > "$STATE_DIR/12_fast_summary_jobid.txt"
+            echo "  fast_summary_jobid=$j_sum"
+
+            j_sel=$(sbatch --parsable --dependency=afterok:"$j_sum" slurm/11_select_fast_top.sbatch)
             echo "$j_sel" > "$STATE_DIR/11_select_fast_jobid.txt"
             echo "  select_fast_jobid=$j_sel"
 
@@ -938,7 +1065,11 @@ def _render_submitter_balance(cfg: DockingPipelineConfig, *, run_yaml_path: Path
             echo "$j_bal" > "$STATE_DIR/20_balance_array_jobid.txt"
             echo "  balance_array_jobid=$j_bal"
 
-            j_sel=$(sbatch --parsable --dependency=afterok:"$j_bal" slurm/21_select_balance_top.sbatch)
+            j_sum=$(sbatch --parsable --dependency=afterok:"$j_bal" --array="$arr" slurm/22_summarize_balance_array.sbatch)
+            echo "$j_sum" > "$STATE_DIR/22_balance_summary_jobid.txt"
+            echo "  balance_summary_jobid=$j_sum"
+
+            j_sel=$(sbatch --parsable --dependency=afterok:"$j_sum" slurm/21_select_balance_top.sbatch)
             echo "$j_sel" > "$STATE_DIR/21_select_balance_jobid.txt"
             echo "  select_balance_jobid=$j_sel"
 
@@ -990,7 +1121,11 @@ def _render_submitter_detail(cfg: DockingPipelineConfig, *, run_yaml_path: Path)
             echo "$j_det" > "$STATE_DIR/30_detail_array_jobid.txt"
             echo "  detail_array_jobid=$j_det"
 
-            j_next=$(sbatch --parsable --dependency=afterok:"$j_det" slurm/04_submit_cluster_unimol.sbatch)
+            j_sum=$(sbatch --parsable --dependency=afterok:"$j_det" --array="$arr" slurm/31_summarize_detail_array.sbatch)
+            echo "$j_sum" > "$STATE_DIR/31_detail_summary_jobid.txt"
+            echo "  detail_summary_jobid=$j_sum"
+
+            j_next=$(sbatch --parsable --dependency=afterok:"$j_sum" slurm/04_submit_cluster_unimol.sbatch)
             echo "$j_next" > "$STATE_DIR/04_submit_cluster_unimol_jobid.txt"
             echo "  next_submitter_jobid=$j_next"
             """
