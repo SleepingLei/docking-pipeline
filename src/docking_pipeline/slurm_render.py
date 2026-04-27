@@ -305,8 +305,8 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
               exit 0
             fi
             if [[ ! -s "$poses" ]]; then
-              echo "[error] fast poses missing: $poses" >&2
-              exit 2
+              echo "[warn] fast poses missing, skip summary for task $task_id: $poses" >&2
+              exit 0
             fi
 
             conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
@@ -423,8 +423,8 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
               exit 0
             fi
             if [[ ! -s "$poses" ]]; then
-              echo "[error] balance poses missing: $poses" >&2
-              exit 2
+              echo "[warn] balance poses missing, skip summary for task $task_id: $poses" >&2
+              exit 0
             fi
 
             conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
@@ -542,8 +542,8 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
               exit 0
             fi
             if [[ ! -s "$poses" ]]; then
-              echo "[error] detail poses missing: $poses" >&2
-              exit 2
+              echo "[warn] detail poses missing, skip summary for task $task_id: $poses" >&2
+              exit 0
             fi
 
             conda run -n {cfg.clustering.env_name} python -m docking_pipeline.steps.summarize_unidock2_chunk \\
@@ -890,10 +890,11 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
         if [[ "$n_fast_sum" -ge "$n_fast" ]]; then
           echo "  skipped (fast summaries already exist: $n_fast_sum/$n_fast)"
         else
-          j1="$(submit "slurm/10_unidock_fast_array.sbatch" --array=0-$((n_fast-1)))"
-          echo "  jobid=$j1"
-          wait_job "$j1"
-          j1s="$(submit "slurm/12_summarize_fast_array.sbatch" --array=0-$((n_fast-1)))"
+            j1="$(submit "slurm/10_unidock_fast_array.sbatch" --array=0-$((n_fast-1)))"
+            echo "  jobid=$j1"
+          # Allow downstream summarization to run even if some array tasks fail.
+          wait_for_glob "unidock_fast/chunks/poses_*.sdf" "$j1"
+          j1s="$(submit "slurm/12_summarize_fast_array.sbatch" --dependency=afterany:$j1 --array=0-$((n_fast-1)))"
           echo "  summarize_jobid=$j1s"
           wait_job "$j1s"
         fi
@@ -919,8 +920,8 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
         else
           j3="$(submit "slurm/20_unidock_balance_array.sbatch" --array=0-$((n_bal-1)))"
           echo "  jobid=$j3"
-          wait_job "$j3"
-          j3s="$(submit "slurm/22_summarize_balance_array.sbatch" --array=0-$((n_bal-1)))"
+          wait_for_glob "unidock_balance/chunks/poses_*.sdf" "$j3"
+          j3s="$(submit "slurm/22_summarize_balance_array.sbatch" --dependency=afterany:$j3 --array=0-$((n_bal-1)))"
           echo "  summarize_jobid=$j3s"
           wait_job "$j3s"
         fi
@@ -946,8 +947,8 @@ def _render_submit_auto_script(cfg: DockingPipelineConfig, *, run_yaml_path: Pat
         else
           j5="$(submit "slurm/30_unidock_detail_array.sbatch" --array=0-$((n_det-1)))"
           echo "  jobid=$j5"
-          wait_job "$j5"
-          j5s="$(submit "slurm/31_summarize_detail_array.sbatch" --array=0-$((n_det-1)))"
+          wait_for_glob "unidock_detail/chunks/poses_*.sdf" "$j5"
+          j5s="$(submit "slurm/31_summarize_detail_array.sbatch" --dependency=afterany:$j5 --array=0-$((n_det-1)))"
           echo "  summarize_jobid=$j5s"
           wait_job "$j5s"
         fi
@@ -1091,7 +1092,7 @@ def _render_submitter_fast(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
             echo "$j_fast" > "$STATE_DIR/10_fast_array_jobid.txt"
             echo "  fast_array_jobid=$j_fast"
 
-            j_sum=$(sbatch --parsable --dependency=afterok:"$j_fast" --array="$arr" slurm/12_summarize_fast_array.sbatch)
+            j_sum=$(sbatch --parsable --dependency=afterany:"$j_fast" --array="$arr" slurm/12_summarize_fast_array.sbatch)
             echo "$j_sum" > "$STATE_DIR/12_fast_summary_jobid.txt"
             echo "  fast_summary_jobid=$j_sum"
 
@@ -1147,7 +1148,7 @@ def _render_submitter_balance(cfg: DockingPipelineConfig, *, run_yaml_path: Path
             echo "$j_bal" > "$STATE_DIR/20_balance_array_jobid.txt"
             echo "  balance_array_jobid=$j_bal"
 
-            j_sum=$(sbatch --parsable --dependency=afterok:"$j_bal" --array="$arr" slurm/22_summarize_balance_array.sbatch)
+            j_sum=$(sbatch --parsable --dependency=afterany:"$j_bal" --array="$arr" slurm/22_summarize_balance_array.sbatch)
             echo "$j_sum" > "$STATE_DIR/22_balance_summary_jobid.txt"
             echo "  balance_summary_jobid=$j_sum"
 
@@ -1203,7 +1204,7 @@ def _render_submitter_detail(cfg: DockingPipelineConfig, *, run_yaml_path: Path)
             echo "$j_det" > "$STATE_DIR/30_detail_array_jobid.txt"
             echo "  detail_array_jobid=$j_det"
 
-            j_sum=$(sbatch --parsable --dependency=afterok:"$j_det" --array="$arr" slurm/31_summarize_detail_array.sbatch)
+            j_sum=$(sbatch --parsable --dependency=afterany:"$j_det" --array="$arr" slurm/31_summarize_detail_array.sbatch)
             echo "$j_sum" > "$STATE_DIR/31_detail_summary_jobid.txt"
             echo "  detail_summary_jobid=$j_sum"
 
