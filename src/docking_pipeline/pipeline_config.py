@@ -96,7 +96,7 @@ class UniDock2Section:
     rmsd_limit: float = 1.0
     energy_range: float = 5.0
     temp_dir: str = "/tmp"
-    no_progress_timeout_minutes: int = 90
+    no_progress_timeout_minutes: int = 15
     progress_check_interval_minutes: int = 5
     stages: dict[str, UniDock2StageSection] = field(default_factory=dict)
 
@@ -328,7 +328,7 @@ def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
         rmsd_limit=float(ud_d.get("rmsd_limit", 1.0)),
         energy_range=float(ud_d.get("energy_range", 5.0)),
         temp_dir=str(ud_d.get("temp_dir", "/tmp")),
-        no_progress_timeout_minutes=int(ud_d.get("no_progress_timeout_minutes", 90)),
+        no_progress_timeout_minutes=int(ud_d.get("no_progress_timeout_minutes", 15)),
         progress_check_interval_minutes=int(ud_d.get("progress_check_interval_minutes", 5)),
         stages=stages,
     )
