@@ -163,6 +163,8 @@ class SlurmSection:
     max_parallel_unidock2: int | None = None
     max_parallel_unimol: int | None = None
     max_parallel_gnina: int | None = None
+    # Safety valve for clusters with a low MaxArraySize. Large stages are split into multiple array jobs.
+    max_array_tasks_per_job: int = 1000
     defaults: SlurmDefaults = field(default_factory=SlurmDefaults)
 
 
@@ -279,6 +281,8 @@ def _validate(cfg: DockingPipelineConfig) -> None:
         raise ValueError("unidock2.no_progress_timeout_minutes must be > 0")
     if cfg.unidock2.progress_check_interval_minutes <= 0:
         raise ValueError("unidock2.progress_check_interval_minutes must be > 0")
+    if cfg.slurm.max_array_tasks_per_job <= 0:
+        raise ValueError("slurm.max_array_tasks_per_job must be > 0")
 
 
 def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
@@ -393,6 +397,11 @@ def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
         gpu_partition_unidock2=str(sl_d.get("gpu_partition_unidock2", "gpu_4090")),
         gpu_partition_unimol=str(sl_d.get("gpu_partition_unimol", "gpu_h100")),
         gpu_partition_gnina=str(sl_d.get("gpu_partition_gnina", "gpu_4090")),
+        gpu_exclusive=bool(sl_d.get("gpu_exclusive", False)),
+        max_parallel_unidock2=(None if sl_d.get("max_parallel_unidock2", None) is None else int(sl_d.get("max_parallel_unidock2"))),
+        max_parallel_unimol=(None if sl_d.get("max_parallel_unimol", None) is None else int(sl_d.get("max_parallel_unimol"))),
+        max_parallel_gnina=(None if sl_d.get("max_parallel_gnina", None) is None else int(sl_d.get("max_parallel_gnina"))),
+        max_array_tasks_per_job=int(sl_d.get("max_array_tasks_per_job", 1000)),
         defaults=SlurmDefaults(
             time=time_val,
             cpus_per_task=int(defs_d.get("cpus_per_task", 8)),

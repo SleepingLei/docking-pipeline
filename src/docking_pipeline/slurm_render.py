@@ -186,6 +186,58 @@ def _unidock_progress_watchdog_snippet(*, timeout_minutes: int, check_interval_m
     )
 
 
+def _array_submit_helpers_snippet(*, max_array_tasks_per_job: int) -> str:
+    return textwrap.dedent(
+        f"""\
+        MAX_ARRAY_TASKS_PER_JOB={max_array_tasks_per_job}
+
+        submit_array_batches() {{
+          local script="$1"
+          local dep_kind="${{2:-}}"
+          local dep_ids="${{3:-}}"
+          local n="$4"
+          local max_par="$5"
+
+          local start=0
+          local ids=()
+          while (( start < n )); do
+            local end=$((start + MAX_ARRAY_TASKS_PER_JOB - 1))
+            if (( end >= n )); then
+              end=$((n - 1))
+            fi
+            local arr="${{start}}-${{end}}"
+            if [[ "$max_par" -gt 0 ]]; then
+              local width=$((end - start + 1))
+              local par="$max_par"
+              if (( par > width )); then
+                par="$width"
+              fi
+              arr="${{arr}}%${{par}}"
+            fi
+
+            local jid
+            if [[ -n "$dep_kind" && -n "$dep_ids" ]]; then
+              jid=$(sbatch --parsable --dependency="${{dep_kind}}:${{dep_ids}}" --array="$arr" "$script")
+            else
+              jid=$(sbatch --parsable --array="$arr" "$script")
+            fi
+            ids+=("$jid")
+            start=$((end + 1))
+          done
+
+          local joined=""
+          local sep=""
+          local jid=""
+          for jid in "${{ids[@]}}"; do
+            joined="${{joined}}${{sep}}${{jid}}"
+            sep=":"
+          done
+          echo "$joined"
+        }}
+        """
+    )
+
+
 def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -> dict[str, str]:
     run_dir = cfg.run.work_dir
     logs_dir = run_dir / "logs"
@@ -1070,6 +1122,7 @@ def _render_submitter_fast(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         )
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _array_submit_helpers_snippet(max_array_tasks_per_job=cfg.slurm.max_array_tasks_per_job)
         + textwrap.dedent(
             f"""\
             RUN_DIR="{run_dir}"
@@ -1083,16 +1136,12 @@ def _render_submitter_fast(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
               exit 2
             fi
             MAX_PAR={cfg.slurm.max_parallel_unidock2 if cfg.slurm.max_parallel_unidock2 is not None else -1}
-            arr="0-$((n-1))"
-            if [[ "$MAX_PAR" -gt 0 ]]; then
-              arr="$arr%$MAX_PAR"
-            fi
             echo "[deps] submit unidock fast array n=$n"
-            j_fast=$(sbatch --parsable --array="$arr" slurm/10_unidock_fast_array.sbatch)
+            j_fast=$(submit_array_batches "slurm/10_unidock_fast_array.sbatch" "" "" "$n" "$MAX_PAR")
             echo "$j_fast" > "$STATE_DIR/10_fast_array_jobid.txt"
             echo "  fast_array_jobid=$j_fast"
 
-            j_sum=$(sbatch --parsable --dependency=afterany:"$j_fast" --array="$arr" slurm/12_summarize_fast_array.sbatch)
+            j_sum=$(submit_array_batches "slurm/12_summarize_fast_array.sbatch" "afterany" "$j_fast" "$n" "$MAX_PAR")
             echo "$j_sum" > "$STATE_DIR/12_fast_summary_jobid.txt"
             echo "  fast_summary_jobid=$j_sum"
 
@@ -1126,6 +1175,7 @@ def _render_submitter_balance(cfg: DockingPipelineConfig, *, run_yaml_path: Path
         )
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _array_submit_helpers_snippet(max_array_tasks_per_job=cfg.slurm.max_array_tasks_per_job)
         + textwrap.dedent(
             f"""\
             RUN_DIR="{run_dir}"
@@ -1139,16 +1189,12 @@ def _render_submitter_balance(cfg: DockingPipelineConfig, *, run_yaml_path: Path
               exit 2
             fi
             MAX_PAR={cfg.slurm.max_parallel_unidock2 if cfg.slurm.max_parallel_unidock2 is not None else -1}
-            arr="0-$((n-1))"
-            if [[ "$MAX_PAR" -gt 0 ]]; then
-              arr="$arr%$MAX_PAR"
-            fi
             echo "[deps] submit unidock balance array n=$n"
-            j_bal=$(sbatch --parsable --array="$arr" slurm/20_unidock_balance_array.sbatch)
+            j_bal=$(submit_array_batches "slurm/20_unidock_balance_array.sbatch" "" "" "$n" "$MAX_PAR")
             echo "$j_bal" > "$STATE_DIR/20_balance_array_jobid.txt"
             echo "  balance_array_jobid=$j_bal"
 
-            j_sum=$(sbatch --parsable --dependency=afterany:"$j_bal" --array="$arr" slurm/22_summarize_balance_array.sbatch)
+            j_sum=$(submit_array_batches "slurm/22_summarize_balance_array.sbatch" "afterany" "$j_bal" "$n" "$MAX_PAR")
             echo "$j_sum" > "$STATE_DIR/22_balance_summary_jobid.txt"
             echo "  balance_summary_jobid=$j_sum"
 
@@ -1182,6 +1228,7 @@ def _render_submitter_detail(cfg: DockingPipelineConfig, *, run_yaml_path: Path)
         )
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _array_submit_helpers_snippet(max_array_tasks_per_job=cfg.slurm.max_array_tasks_per_job)
         + textwrap.dedent(
             f"""\
             RUN_DIR="{run_dir}"
@@ -1195,16 +1242,12 @@ def _render_submitter_detail(cfg: DockingPipelineConfig, *, run_yaml_path: Path)
               exit 2
             fi
             MAX_PAR={cfg.slurm.max_parallel_unidock2 if cfg.slurm.max_parallel_unidock2 is not None else -1}
-            arr="0-$((n-1))"
-            if [[ "$MAX_PAR" -gt 0 ]]; then
-              arr="$arr%$MAX_PAR"
-            fi
             echo "[deps] submit unidock detail array n=$n"
-            j_det=$(sbatch --parsable --array="$arr" slurm/30_unidock_detail_array.sbatch)
+            j_det=$(submit_array_batches "slurm/30_unidock_detail_array.sbatch" "" "" "$n" "$MAX_PAR")
             echo "$j_det" > "$STATE_DIR/30_detail_array_jobid.txt"
             echo "  detail_array_jobid=$j_det"
 
-            j_sum=$(sbatch --parsable --dependency=afterany:"$j_det" --array="$arr" slurm/31_summarize_detail_array.sbatch)
+            j_sum=$(submit_array_batches "slurm/31_summarize_detail_array.sbatch" "afterany" "$j_det" "$n" "$MAX_PAR")
             echo "$j_sum" > "$STATE_DIR/31_detail_summary_jobid.txt"
             echo "  detail_summary_jobid=$j_sum"
 
@@ -1234,6 +1277,7 @@ def _render_submitter_cluster_unimol(cfg: DockingPipelineConfig, *, run_yaml_pat
         )
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _array_submit_helpers_snippet(max_array_tasks_per_job=cfg.slurm.max_array_tasks_per_job)
         + textwrap.dedent(
             f"""\
             RUN_DIR="{run_dir}"
@@ -1277,6 +1321,7 @@ def _render_submitter_unimol_array(cfg: DockingPipelineConfig, *, run_yaml_path:
         )
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _array_submit_helpers_snippet(max_array_tasks_per_job=cfg.slurm.max_array_tasks_per_job)
         + textwrap.dedent(
             f"""\
             RUN_DIR="{run_dir}"
@@ -1290,12 +1335,8 @@ def _render_submitter_unimol_array(cfg: DockingPipelineConfig, *, run_yaml_path:
               exit 2
             fi
             MAX_PAR={cfg.slurm.max_parallel_unimol if cfg.slurm.max_parallel_unimol is not None else -1}
-            arr="0-$((n-1))"
-            if [[ "$MAX_PAR" -gt 0 ]]; then
-              arr="$arr%$MAX_PAR"
-            fi
             echo "[deps] submit unimol array n=$n"
-            j_um=$(sbatch --parsable --array="$arr" slurm/60_unimol_array.sbatch)
+            j_um=$(submit_array_batches "slurm/60_unimol_array.sbatch" "" "" "$n" "$MAX_PAR")
             echo "$j_um" > "$STATE_DIR/60_unimol_array_jobid.txt"
             echo "  unimol_array_jobid=$j_um"
 
@@ -1338,13 +1379,9 @@ def _render_submitter_gnina_finalize(cfg: DockingPipelineConfig, *, run_yaml_pat
               exit 2
             fi
             MAX_PAR={cfg.slurm.max_parallel_gnina if cfg.slurm.max_parallel_gnina is not None else -1}
-            arr="0-$((n-1))"
-            if [[ "$MAX_PAR" -gt 0 ]]; then
-              arr="$arr%$MAX_PAR"
-            fi
 
             echo "[deps] submit gnina array n=$n"
-            j_gn=$(sbatch --parsable --array="$arr" slurm/70_gnina_array.sbatch)
+            j_gn=$(submit_array_batches "slurm/70_gnina_array.sbatch" "" "" "$n" "$MAX_PAR")
             echo "$j_gn" > "$STATE_DIR/70_gnina_array_jobid.txt"
             echo "  gnina_array_jobid=$j_gn"
 
