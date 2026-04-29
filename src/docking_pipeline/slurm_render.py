@@ -10,6 +10,7 @@ def _sbatch_header(
     *,
     job_name: str,
     partition: str,
+    qos: str | None = None,
     time: str | None,
     cpus_per_task: int,
     mem: str,
@@ -32,6 +33,8 @@ def _sbatch_header(
         lines.append(f"#SBATCH -t {time}")
     if account:
         lines.append(f"#SBATCH -A {account}")
+    if qos:
+        lines.append(f"#SBATCH --qos={qos}")
     if gres:
         lines.append(f"#SBATCH --gres={gres}")
     if exclusive:
@@ -286,6 +289,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         _sbatch_header(
             job_name=f"{cfg.run.name}_ud2_fast",
             partition=cfg.slurm.gpu_partition_unidock2,
+            qos=cfg.slurm.gpu_qos_unidock2,
             time=defaults.time,
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
@@ -404,6 +408,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         _sbatch_header(
             job_name=f"{cfg.run.name}_ud2_bal",
             partition=cfg.slurm.gpu_partition_unidock2,
+            qos=cfg.slurm.gpu_qos_unidock2,
             time=defaults.time,
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
@@ -522,6 +527,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         _sbatch_header(
             job_name=f"{cfg.run.name}_ud2_det",
             partition=cfg.slurm.gpu_partition_unidock2,
+            qos=cfg.slurm.gpu_qos_unidock2,
             time=defaults.time,
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,
@@ -659,6 +665,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         _sbatch_header(
             job_name=f"{cfg.run.name}_unimol",
             partition=cfg.slurm.gpu_partition_unimol,
+            qos=cfg.slurm.gpu_qos_unimol,
             time=defaults.time,
             cpus_per_task=defaults.cpus_per_task,
             mem="64G",
@@ -685,6 +692,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         _sbatch_header(
             job_name=f"{cfg.run.name}_gnina",
             partition=cfg.slurm.gpu_partition_gnina,
+            qos=cfg.slurm.gpu_qos_gnina,
             time=defaults.time,
             cpus_per_task=defaults.cpus_per_task,
             mem=defaults.mem,

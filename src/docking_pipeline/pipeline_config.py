@@ -155,6 +155,9 @@ class SlurmSection:
     gpu_partition_unidock2: str = "gpu_4090"
     gpu_partition_unimol: str = "gpu_h100"
     gpu_partition_gnina: str = "gpu_4090"
+    gpu_qos_unidock2: str | None = None
+    gpu_qos_unimol: str | None = None
+    gpu_qos_gnina: str | None = None
     # If true, request node exclusivity for GPU jobs. Leave false for multi-GPU nodes
     # so Slurm can pack up to (GPUs per node) jobs on a single node.
     gpu_exclusive: bool = False
@@ -397,6 +400,9 @@ def _parse_config_dict(data: dict[str, Any]) -> DockingPipelineConfig:
         gpu_partition_unidock2=str(sl_d.get("gpu_partition_unidock2", "gpu_4090")),
         gpu_partition_unimol=str(sl_d.get("gpu_partition_unimol", "gpu_h100")),
         gpu_partition_gnina=str(sl_d.get("gpu_partition_gnina", "gpu_4090")),
+        gpu_qos_unidock2=(None if sl_d.get("gpu_qos_unidock2", None) in (None, "", "null") else str(sl_d.get("gpu_qos_unidock2"))),
+        gpu_qos_unimol=(None if sl_d.get("gpu_qos_unimol", None) in (None, "", "null") else str(sl_d.get("gpu_qos_unimol"))),
+        gpu_qos_gnina=(None if sl_d.get("gpu_qos_gnina", None) in (None, "", "null") else str(sl_d.get("gpu_qos_gnina"))),
         gpu_exclusive=bool(sl_d.get("gpu_exclusive", False)),
         max_parallel_unidock2=(None if sl_d.get("max_parallel_unidock2", None) is None else int(sl_d.get("max_parallel_unidock2"))),
         max_parallel_unimol=(None if sl_d.get("max_parallel_unimol", None) is None else int(sl_d.get("max_parallel_unimol"))),
