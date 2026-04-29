@@ -64,9 +64,11 @@ def _gpu_env_banner(*, task_id_var: str = "SLURM_ARRAY_TASK_ID") -> str:
     """
     return textwrap.dedent(
         f"""\
-        task_id="${{{task_id_var}:-0}}"
-        echo "[env] host=$(hostname) task_id=$task_id"
-        echo "[env] SLURM_JOB_ID=${{SLURM_JOB_ID:-}} SLURM_ARRAY_TASK_ID=${{{task_id_var}:-}}"
+        raw_task_id="${{{task_id_var}:-0}}"
+        task_offset="${{TASK_OFFSET:-0}}"
+        task_id=$((raw_task_id + task_offset))
+        echo "[env] host=$(hostname) task_id=$task_id raw_task_id=$raw_task_id task_offset=$task_offset"
+        echo "[env] SLURM_JOB_ID=${{SLURM_JOB_ID:-}} SLURM_ARRAY_TASK_ID=${{{task_id_var}:-}} TASK_OFFSET=${{TASK_OFFSET:-}}"
         echo "[env] SLURM_JOB_GPUS=${{SLURM_JOB_GPUS:-}} CUDA_VISIBLE_DEVICES=${{CUDA_VISIBLE_DEVICES:-}}"
         ngpu="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
         echo "[env] nvidia-smi -L count=$ngpu"
@@ -208,9 +210,9 @@ def _array_submit_helpers_snippet(*, max_array_tasks_per_job: int) -> str:
             if (( end >= n )); then
               end=$((n - 1))
             fi
-            local arr="${{start}}-${{end}}"
+            local width=$((end - start + 1))
+            local arr="0-$((width - 1))"
             if [[ "$max_par" -gt 0 ]]; then
-              local width=$((end - start + 1))
               local par="$max_par"
               if (( par > width )); then
                 par="$width"
@@ -220,9 +222,9 @@ def _array_submit_helpers_snippet(*, max_array_tasks_per_job: int) -> str:
 
             local jid
             if [[ -n "$dep_kind" && -n "$dep_ids" ]]; then
-              jid=$(sbatch --parsable --dependency="${{dep_kind}}:${{dep_ids}}" --array="$arr" "$script")
+              jid=$(sbatch --parsable --dependency="${{dep_kind}}:${{dep_ids}}" --export=ALL,TASK_OFFSET="$start" --array="$arr" "$script")
             else
-              jid=$(sbatch --parsable --array="$arr" "$script")
+              jid=$(sbatch --parsable --export=ALL,TASK_OFFSET="$start" --array="$arr" "$script")
             fi
             ids+=("$jid")
             start=$((end + 1))
@@ -352,7 +354,9 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            raw_task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            task_offset="${{TASK_OFFSET:-0}}"
+            task_id=$((raw_task_id + task_offset))
             poses="{run_dir}/unidock_fast/chunks/poses_${{task_id}}.sdf"
             summary="{run_dir}/unidock_fast/chunk_summaries/summary_${{task_id}}.csv"
 
@@ -471,7 +475,9 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            raw_task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            task_offset="${{TASK_OFFSET:-0}}"
+            task_id=$((raw_task_id + task_offset))
             poses="{run_dir}/unidock_balance/chunks/poses_${{task_id}}.sdf"
             summary="{run_dir}/unidock_balance/chunk_summaries/summary_${{task_id}}.csv"
 
@@ -590,7 +596,9 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            raw_task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
+            task_offset="${{TASK_OFFSET:-0}}"
+            task_id=$((raw_task_id + task_offset))
             poses="{run_dir}/unidock_detail/chunks/poses_${{task_id}}.sdf"
             summary="{run_dir}/unidock_detail/chunk_summaries/summary_${{task_id}}.csv"
             best="{run_dir}/unidock_detail/best_poses/best_${{task_id}}.sdf"
