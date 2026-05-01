@@ -1356,7 +1356,7 @@ def _render_submitter_unimol_array(cfg: DockingPipelineConfig, *, run_yaml_path:
             echo "$j_um" > "$STATE_DIR/60_unimol_array_jobid.txt"
             echo "  unimol_array_jobid=$j_um"
 
-            j_next=$(sbatch --parsable --dependency=afterok:"$j_um" slurm/06_submit_gnina_finalize.sbatch)
+            j_next=$(sbatch --parsable --dependency=afterany:"$j_um" slurm/06_submit_gnina_finalize.sbatch)
             echo "$j_next" > "$STATE_DIR/06_submit_gnina_finalize_jobid.txt"
             echo "  next_submitter_jobid=$j_next"
             """
@@ -1402,7 +1402,7 @@ def _render_submitter_gnina_finalize(cfg: DockingPipelineConfig, *, run_yaml_pat
             echo "  gnina_array_jobid=$j_gn"
 
             echo "[deps] submit finalize"
-            j_fin=$(sbatch --parsable --dependency=afterok:"$j_gn" slurm/80_finalize.sbatch)
+            j_fin=$(sbatch --parsable --dependency=afterany:"$j_gn" slurm/80_finalize.sbatch)
             echo "$j_fin" > "$STATE_DIR/80_finalize_jobid.txt"
             echo "  finalize_jobid=$j_fin"
             """

@@ -63,7 +63,8 @@ def main() -> int:
     chunk_dir = run_dir / "unimol" / "chunks" / f"chunk_{args.chunk_id}"
     in_dir = chunk_dir / "out_sdf"
     if not in_dir.exists():
-        raise FileNotFoundError(in_dir)
+        print(f"[warn] skip gnina chunk {args.chunk_id}: missing unimol output dir {in_dir}")
+        return 0
 
     gnina_dir = run_dir / "gnina" / "chunks" / f"chunk_{args.chunk_id}"
     ensure_dir(gnina_dir)
@@ -75,7 +76,9 @@ def main() -> int:
     # Merge unimol output SDFs into one multi-molecule input for gnina.
     sdf_paths = sorted(in_dir.glob("*.sdf"))
     if not sdf_paths:
-        raise RuntimeError(f"No Uni-Mol output SDFs found under {in_dir}")
+        print(f"[warn] skip gnina chunk {args.chunk_id}: no Uni-Mol output SDFs under {in_dir}")
+        write_csv(out_csv, [], fieldnames=["ligand_id", "minimizedAffinity", "CNNscore", "CNNaffinity"])
+        return 0
 
     count = 0
     with in_sdf.open("w", encoding="utf-8") as f:
@@ -92,7 +95,9 @@ def main() -> int:
                 # Don't fail the whole chunk on a single malformed SDF.
                 print(f"[warn] skip unimol sdf due to parse error: {p} ({e})")
     if count == 0:
-        raise RuntimeError(f"No Uni-Mol output SDFs found under {in_dir}")
+        print(f"[warn] skip gnina chunk {args.chunk_id}: all Uni-Mol SDFs were skipped under {in_dir}")
+        write_csv(out_csv, [], fieldnames=["ligand_id", "minimizedAffinity", "CNNscore", "CNNaffinity"])
+        return 0
 
     cx, cy, cz = cfg.inputs.docking_box.center
     sx, sy, sz = cfg.inputs.docking_box.size
