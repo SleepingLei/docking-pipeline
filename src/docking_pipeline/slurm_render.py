@@ -1382,6 +1382,7 @@ def _render_submitter_gnina_finalize(cfg: DockingPipelineConfig, *, run_yaml_pat
         )
         + _bash_prologue()
         + _python_env_exports(cfg.run.project_dir)
+        + _array_submit_helpers_snippet(max_array_tasks_per_job=cfg.slurm.max_array_tasks_per_job)
         + textwrap.dedent(
             f"""\
             RUN_DIR="{run_dir}"
