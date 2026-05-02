@@ -43,6 +43,19 @@ def _load_gnina(run_dir: Path) -> dict[str, dict[str, float | None]]:
     return out
 
 
+def _load_manifest_smiles(run_dir: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    manifest_csv = run_dir / "inputs" / "ligands_manifest.csv"
+    if not manifest_csv.exists():
+        return out
+    for r in read_csv_rows(manifest_csv):
+        lid = r.get("ligand_id", "").strip()
+        if not lid:
+            continue
+        out[lid] = r.get("smiles", "").strip()
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Merge scores and compute final rank.")
     ap.add_argument("--run-yaml", type=Path, required=True)
@@ -56,6 +69,7 @@ def main() -> int:
     bal = _load_stage_scores(run_dir, "balance")
     det = _load_stage_scores(run_dir, "detail")
     gn = _load_gnina(run_dir)
+    smiles_map = _load_manifest_smiles(run_dir)
 
     # clustering info (optional)
     cluster_map: dict[str, dict[str, str]] = {}
@@ -71,6 +85,8 @@ def main() -> int:
     rows: list[dict[str, object]] = []
     for lid in all_lids:
         row: dict[str, object] = {"ligand_id": lid}
+        if lid in smiles_map:
+            row["smiles"] = smiles_map[lid]
         if lid in fast:
             row["unidock_fast_score"] = fast[lid]
         if lid in bal:
@@ -104,6 +120,7 @@ def main() -> int:
     fieldnames = [
         "rank",
         "ligand_id",
+        "smiles",
         "cluster_id",
         "cluster_rank",
         "is_representative",
@@ -120,4 +137,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
