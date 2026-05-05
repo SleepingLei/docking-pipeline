@@ -39,6 +39,14 @@ The implementation is designed for large Slurm screens and includes:
 - resume/skip behavior for completed chunk outputs
 - tolerance for failed UniDock / UniMol / gnina sub-jobs so the whole workflow can continue
 
+## Upstream References
+
+This pipeline wraps the following upstream tools:
+
+- Uni-Dock2: [dptech-corp/Uni-Dock2](https://github.com/dptech-corp/Uni-Dock2)
+- Uni-Mol Docking V2: [deepmodeling/Uni-Mol](https://github.com/deepmodeling/Uni-Mol)
+- gnina: [gnina/gnina](https://github.com/gnina/gnina)
+
 ## First Remote Step
 
 After syncing this repository to the remote machine:
