@@ -8,6 +8,7 @@ __pycache__/
 remote_env_check_*/
 runs/
 logs/
+remote-results/
 third_party/
 bin/
 models/*.pt
