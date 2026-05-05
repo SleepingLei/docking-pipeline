@@ -239,12 +239,3 @@ bash slurm/submit_workflow_deps.sh
 ```
 
 Completed chunk outputs are skipped where possible, so you usually do not need to rebuild a run from scratch unless you deliberately change chunking or workflow semantics.
-
-## Current Useful Files
-
-- `configs/example_pipeline.yaml`
-- `configs/rnaseL.yaml`
-- `scripts/remote_env_check.sh`
-- `src/docking_pipeline/cli.py`
-- `src/docking_pipeline/slurm_render.py`
-- `src/docking_pipeline/steps/finalize_rank.py`
