@@ -13,7 +13,7 @@ Uni-Dock2 fast
   -> final score table
 ```
 
-Remote target path used in this project:
+Example deployment path:
 
 ```bash
 /data/project/hanwen/software/docking-pipeline
@@ -27,7 +27,7 @@ Given one receptor PDB and a large ligand library in SDF format, the pipeline:
 2. runs `fast -> balance -> detail`
 3. clusters surviving ligands by ECFP6 fingerprints
 4. runs Uni-Mol on cluster representatives
-5. rescored them with gnina
+5. rescored selected ligands with gnina
 6. writes a merged final score table
 
 The implementation is designed for large Slurm screens and includes:
@@ -47,7 +47,7 @@ This pipeline wraps the following upstream tools:
 - Uni-Mol Docking V2: [deepmodeling/Uni-Mol](https://github.com/deepmodeling/Uni-Mol)
 - gnina: [gnina/gnina](https://github.com/gnina/gnina)
 
-## First Remote Step
+## Environment Check
 
 After syncing this repository to the remote machine:
 
@@ -74,7 +74,7 @@ conda run -n dock-pipe python -m pip install -e .
 
 ### 1. Prepare a config
 
-Use one of the YAML configs in `configs/`, for example:
+Use a YAML config under `configs/`, for example:
 
 ```bash
 configs/rnaseL.yaml
@@ -110,7 +110,7 @@ cd runs/<run_name>
 bash slurm/submit_workflow_deps.sh
 ```
 
-This is the normal way to launch the workflow now.  
+This is the standard way to launch the workflow.  
 You usually do **not** need to submit each `.sbatch` manually.
 
 ## Recommended Config Knobs
@@ -225,7 +225,7 @@ Important notes:
 - `CNNscore` is a pose-quality style score; higher is better.
 - `CNNaffinity` is the main gnina CNN affinity-style score; higher is better.
 
-## Practical Resume Pattern
+## Regenerating and Resubmitting
 
 When updating code or Slurm rendering logic:
 
