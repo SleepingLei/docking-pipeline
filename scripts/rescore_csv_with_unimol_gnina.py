@@ -83,12 +83,13 @@ def _prepare_3d_sdf(
     *,
     out_path: Path,
     random_seed: int,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     mol = Chem.MolFromSmiles(ligand.smiles)
     if mol is None:
         raise ValueError("invalid_smiles")
 
     canonical_smiles = Chem.MolToSmiles(mol, canonical=True)
+    smiles_key_h = Chem.MolToSmiles(Chem.RemoveHs(Chem.AddHs(mol)), canonical=True)
     mol = Chem.AddHs(mol)
 
     params = AllChem.ETKDGv3()
@@ -110,7 +111,7 @@ def _prepare_3d_sdf(
     writer = Chem.SDWriter(str(out_path))
     writer.write(mol)
     writer.close()
-    return canonical_smiles, str(out_path)
+    return canonical_smiles, smiles_key_h, str(out_path)
 
 
 def _prepare_input_ligands(
@@ -134,13 +135,14 @@ def _prepare_input_ligands(
                     "status": "ok_existing",
                     "input_sdf": str(sdf_path),
                     "canonical_smiles": "",
+                    "smiles_key_h": "",
                     "error": "",
                 }
             )
             continue
 
         try:
-            canonical_smiles, sdf_out = _prepare_3d_sdf(
+            canonical_smiles, smiles_key_h, sdf_out = _prepare_3d_sdf(
                 ligand,
                 out_path=sdf_path,
                 random_seed=random_seed + idx,
@@ -152,6 +154,7 @@ def _prepare_input_ligands(
                     "status": "ok",
                     "input_sdf": sdf_out,
                     "canonical_smiles": canonical_smiles,
+                    "smiles_key_h": smiles_key_h,
                     "error": "",
                 }
             )
@@ -163,6 +166,7 @@ def _prepare_input_ligands(
                     "status": "failed",
                     "input_sdf": "",
                     "canonical_smiles": "",
+                    "smiles_key_h": "",
                     "error": str(exc),
                 }
             )
@@ -170,7 +174,7 @@ def _prepare_input_ligands(
     write_csv(
         out_dir / "prep_summary.csv",
         prep_rows,
-        fieldnames=["ligand_id", "source_mol_id", "status", "input_sdf", "canonical_smiles", "error"],
+        fieldnames=["ligand_id", "source_mol_id", "status", "input_sdf", "canonical_smiles", "smiles_key_h", "error"],
     )
     return prep_rows
 
@@ -671,6 +675,7 @@ def _write_final_summary(
         merged["prep_status"] = prep.get("status", "")
         merged["prepared_input_sdf"] = prep.get("input_sdf", "")
         merged["canonical_smiles"] = prep.get("canonical_smiles", "")
+        merged["smiles_key_h"] = prep.get("smiles_key_h", "")
         merged["prep_error"] = prep.get("error", "")
         merged["unimol_status"] = unimol.get("status", "")
         merged["unimol_output_sdf"] = unimol.get("output_sdf", "")
@@ -709,6 +714,7 @@ def _write_final_summary(
         "prep_status",
         "prepared_input_sdf",
         "canonical_smiles",
+        "smiles_key_h",
         "prep_error",
         "unimol_status",
         "unimol_output_sdf",
