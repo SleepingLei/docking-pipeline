@@ -222,9 +222,9 @@ def _array_submit_helpers_snippet(*, max_array_tasks_per_job: int) -> str:
 
             local jid
             if [[ -n "$dep_kind" && -n "$dep_ids" ]]; then
-              jid=$(sbatch --parsable --dependency="${{dep_kind}}:${{dep_ids}}" --export=ALL,TASK_OFFSET="$start" --array="$arr" "$script")
+              jid=$(sbatch --parsable --dependency="${{dep_kind}}:${{dep_ids}}" --export=HOME,PATH,USER,LOGNAME,LANG,LC_ALL,TERM,TASK_OFFSET="$start" --array="$arr" "$script")
             else
-              jid=$(sbatch --parsable --export=ALL,TASK_OFFSET="$start" --array="$arr" "$script")
+              jid=$(sbatch --parsable --export=HOME,PATH,USER,LOGNAME,LANG,LC_ALL,TERM,TASK_OFFSET="$start" --array="$arr" "$script")
             fi
             ids+=("$jid")
             start=$((end + 1))
