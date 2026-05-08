@@ -55,6 +55,15 @@ def _bash_prologue() -> str:
     # Keep strict mode but avoid breaking SBATCH parsing by ensuring it comes after all directives.
     return "set -euo pipefail\n"
 
+def _task_offset_snippet(*, task_id_var: str = "SLURM_ARRAY_TASK_ID") -> str:
+    return textwrap.dedent(
+        f"""\
+        raw_task_id="${{{task_id_var}:-0}}"
+        task_offset="${{1:-${{TASK_OFFSET:-0}}}}"
+        task_id=$((raw_task_id + task_offset))
+        """
+    )
+
 def _gpu_env_banner(*, task_id_var: str = "SLURM_ARRAY_TASK_ID") -> str:
     """
     Small, cheap runtime banner for debugging GPU visibility.
@@ -64,11 +73,9 @@ def _gpu_env_banner(*, task_id_var: str = "SLURM_ARRAY_TASK_ID") -> str:
     """
     return textwrap.dedent(
         f"""\
-        raw_task_id="${{{task_id_var}:-0}}"
-        task_offset="${{TASK_OFFSET:-0}}"
-        task_id=$((raw_task_id + task_offset))
+        {_task_offset_snippet(task_id_var=task_id_var).rstrip()}
         echo "[env] host=$(hostname) task_id=$task_id raw_task_id=$raw_task_id task_offset=$task_offset"
-        echo "[env] SLURM_JOB_ID=${{SLURM_JOB_ID:-}} SLURM_ARRAY_TASK_ID=${{{task_id_var}:-}} TASK_OFFSET=${{TASK_OFFSET:-}}"
+        echo "[env] SLURM_JOB_ID=${{SLURM_JOB_ID:-}} SLURM_ARRAY_TASK_ID=${{{task_id_var}:-}} TASK_OFFSET=$task_offset"
         echo "[env] SLURM_JOB_GPUS=${{SLURM_JOB_GPUS:-}} CUDA_VISIBLE_DEVICES=${{CUDA_VISIBLE_DEVICES:-}}"
         ngpu="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
         echo "[env] nvidia-smi -L count=$ngpu"
@@ -222,9 +229,9 @@ def _array_submit_helpers_snippet(*, max_array_tasks_per_job: int) -> str:
 
             local jid
             if [[ -n "$dep_kind" && -n "$dep_ids" ]]; then
-              jid=$(sbatch --parsable --dependency="${{dep_kind}}:${{dep_ids}}" --export=HOME,PATH,USER,LOGNAME,LANG,LC_ALL,TERM,TASK_OFFSET="$start" --array="$arr" "$script")
+              jid=$(sbatch --parsable --dependency="${{dep_kind}}:${{dep_ids}}" --export=ALL --array="$arr" "$script" "$start")
             else
-              jid=$(sbatch --parsable --export=HOME,PATH,USER,LOGNAME,LANG,LC_ALL,TERM,TASK_OFFSET="$start" --array="$arr" "$script")
+              jid=$(sbatch --parsable --export=ALL --array="$arr" "$script" "$start")
             fi
             ids+=("$jid")
             start=$((end + 1))
@@ -354,9 +361,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            raw_task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
-            task_offset="${{TASK_OFFSET:-0}}"
-            task_id=$((raw_task_id + task_offset))
+            {_task_offset_snippet().rstrip()}
             poses="{run_dir}/unidock_fast/chunks/poses_${{task_id}}.sdf"
             summary="{run_dir}/unidock_fast/chunk_summaries/summary_${{task_id}}.csv"
 
@@ -475,9 +480,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            raw_task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
-            task_offset="${{TASK_OFFSET:-0}}"
-            task_id=$((raw_task_id + task_offset))
+            {_task_offset_snippet().rstrip()}
             poses="{run_dir}/unidock_balance/chunks/poses_${{task_id}}.sdf"
             summary="{run_dir}/unidock_balance/chunk_summaries/summary_${{task_id}}.csv"
 
@@ -596,9 +599,7 @@ def render_workflow_sbatch(cfg: DockingPipelineConfig, *, run_yaml_path: Path) -
         + _python_env_exports(cfg.run.project_dir)
         + textwrap.dedent(
             f"""\
-            raw_task_id="${{SLURM_ARRAY_TASK_ID:-0}}"
-            task_offset="${{TASK_OFFSET:-0}}"
-            task_id=$((raw_task_id + task_offset))
+            {_task_offset_snippet().rstrip()}
             poses="{run_dir}/unidock_detail/chunks/poses_${{task_id}}.sdf"
             summary="{run_dir}/unidock_detail/chunk_summaries/summary_${{task_id}}.csv"
             best="{run_dir}/unidock_detail/best_poses/best_${{task_id}}.sdf"
