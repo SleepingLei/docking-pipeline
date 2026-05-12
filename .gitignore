@@ -20,3 +20,7 @@ test/*.pdb
 test/*.sdf
 test/*.mol2
 test/*.pdbqt
+dirty-task/*
+!dirty-task/compare_with_disney/
+dirty-task/compare_with_disney/*
+!dirty-task/compare_with_disney/1912054.cif
