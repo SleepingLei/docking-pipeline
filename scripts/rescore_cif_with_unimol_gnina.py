@@ -1,50 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
-import math
-import re
 import shlex
 import subprocess
-from collections import defaultdict, deque
-from dataclasses import dataclass
 from pathlib import Path
 
 from rdkit import Chem
-from rdkit.Chem import rdDetermineBonds
-from rdkit.Geometry import Point3D
 
 from docking_pipeline.pipeline_config import DockingPipelineConfig, load_config, normalize_config
-from docking_pipeline.steps.common import ensure_dir, read_csv_rows, safe_float, write_csv
-
-
-NUM_RE = re.compile(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:\(\d+\))?$")
-
-
-@dataclass(frozen=True)
-class AtomSite:
-    label: str
-    element: str
-    fract_x: float
-    fract_y: float
-    fract_z: float
-
-
-@dataclass(frozen=True)
-class BondSite:
-    atom1: str
-    atom2: str
-
-
-@dataclass(frozen=True)
-class Cell:
-    a: float
-    b: float
-    c: float
-    alpha_deg: float
-    beta_deg: float
-    gamma_deg: float
+from docking_pipeline.steps.common import ensure_dir, safe_float, write_csv
 
 
 def _load_cfg(config_path: Path) -> DockingPipelineConfig:
@@ -52,216 +17,28 @@ def _load_cfg(config_path: Path) -> DockingPipelineConfig:
     return normalize_config(cfg, config_path=config_path)
 
 
-def _parse_cif_number(text: str) -> float:
-    s = text.strip()
-    match = NUM_RE.match(s)
-    if not match:
-        raise ValueError(f"Cannot parse CIF number: {text!r}")
-    return float(match.group(1))
-
-
-def _tokenize_line(line: str) -> list[str]:
-    return shlex.split(line, posix=False)
-
-
-def _read_cif_lines(path: Path) -> list[str]:
-    return path.read_text(encoding="utf-8", errors="replace").splitlines()
-
-
-def _extract_scalar(lines: list[str], key: str) -> str:
-    for line in lines:
-        if not line.startswith(key):
-            continue
-        parts = line.split(maxsplit=1)
-        if len(parts) != 2:
-            raise ValueError(f"Malformed CIF scalar line for {key}: {line!r}")
-        return parts[1].strip()
-    raise KeyError(key)
-
-
-def _extract_loop_rows(lines: list[str], expected_header: str) -> tuple[list[str], list[list[str]]]:
-    idx = 0
-    while idx < len(lines):
-        if lines[idx].strip() != "loop_":
-            idx += 1
-            continue
-
-        idx += 1
-        headers: list[str] = []
-        while idx < len(lines) and lines[idx].startswith("_"):
-            headers.append(lines[idx].strip())
-            idx += 1
-
-        if not headers or expected_header not in headers:
-            continue
-
-        rows: list[list[str]] = []
-        while idx < len(lines):
-            raw = lines[idx]
-            stripped = raw.strip()
-            if not stripped:
-                idx += 1
-                break
-            if stripped == "loop_" or raw.startswith("_") or raw.startswith("data_"):
-                break
-            if stripped.startswith(";"):
-                raise ValueError(f"Unexpected multi-line CIF value inside target loop: {expected_header}")
-            rows.append(_tokenize_line(raw))
-            idx += 1
-        return headers, rows
-
-    raise KeyError(expected_header)
-
-
-def _load_cif_atoms_and_bonds(cif_path: Path) -> tuple[Cell, list[AtomSite], list[BondSite]]:
-    lines = _read_cif_lines(cif_path)
-    cell = Cell(
-        a=_parse_cif_number(_extract_scalar(lines, "_cell_length_a")),
-        b=_parse_cif_number(_extract_scalar(lines, "_cell_length_b")),
-        c=_parse_cif_number(_extract_scalar(lines, "_cell_length_c")),
-        alpha_deg=_parse_cif_number(_extract_scalar(lines, "_cell_angle_alpha")),
-        beta_deg=_parse_cif_number(_extract_scalar(lines, "_cell_angle_beta")),
-        gamma_deg=_parse_cif_number(_extract_scalar(lines, "_cell_angle_gamma")),
-    )
-
-    atom_headers, atom_rows = _extract_loop_rows(lines, "_atom_site_label")
-    atom_idx = {name: i for i, name in enumerate(atom_headers)}
-    atoms = [
-        AtomSite(
-            label=row[atom_idx["_atom_site_label"]].strip(),
-            element=row[atom_idx["_atom_site_type_symbol"]].strip(),
-            fract_x=_parse_cif_number(row[atom_idx["_atom_site_fract_x"]]),
-            fract_y=_parse_cif_number(row[atom_idx["_atom_site_fract_y"]]),
-            fract_z=_parse_cif_number(row[atom_idx["_atom_site_fract_z"]]),
-        )
-        for row in atom_rows
-    ]
-
-    bond_headers, bond_rows = _extract_loop_rows(lines, "_geom_bond_atom_site_label_1")
-    bond_idx = {name: i for i, name in enumerate(bond_headers)}
-    bonds = [
-        BondSite(
-            atom1=row[bond_idx["_geom_bond_atom_site_label_1"]].strip(),
-            atom2=row[bond_idx["_geom_bond_atom_site_label_2"]].strip(),
-        )
-        for row in bond_rows
-    ]
-    return cell, atoms, bonds
-
-
-def _largest_component_labels(atoms: list[AtomSite], bonds: list[BondSite]) -> set[str]:
-    labels = {atom.label for atom in atoms}
-    graph: dict[str, set[str]] = {label: set() for label in labels}
-    for bond in bonds:
-        if bond.atom1 not in graph or bond.atom2 not in graph:
-            continue
-        graph[bond.atom1].add(bond.atom2)
-        graph[bond.atom2].add(bond.atom1)
-
-    visited: set[str] = set()
-    components: list[set[str]] = []
-    for label in labels:
-        if label in visited:
-            continue
-        queue: deque[str] = deque([label])
-        comp: set[str] = set()
-        visited.add(label)
-        while queue:
-            cur = queue.popleft()
-            comp.add(cur)
-            for nxt in graph[cur]:
-                if nxt in visited:
-                    continue
-                visited.add(nxt)
-                queue.append(nxt)
-        components.append(comp)
-
-    atoms_by_label = {atom.label: atom for atom in atoms}
-    components.sort(
-        key=lambda comp: (
-            sum(1 for label in comp if atoms_by_label[label].element.upper() != "H"),
-            len(comp),
-        ),
-        reverse=True,
-    )
-    return components[0] if components else set()
-
-
-def _fractional_to_cartesian(cell: Cell, x: float, y: float, z: float) -> tuple[float, float, float]:
-    alpha = math.radians(cell.alpha_deg)
-    beta = math.radians(cell.beta_deg)
-    gamma = math.radians(cell.gamma_deg)
-
-    ax, ay, az = cell.a, 0.0, 0.0
-    bx, by, bz = cell.b * math.cos(gamma), cell.b * math.sin(gamma), 0.0
-    cx = cell.c * math.cos(beta)
-    cy = cell.c * (math.cos(alpha) - math.cos(beta) * math.cos(gamma)) / math.sin(gamma)
-    cz_sq = cell.c * cell.c - cx * cx - cy * cy
-    if cz_sq <= 0:
-        raise ValueError(f"Invalid unit cell derived cz^2={cz_sq}")
-    cz = math.sqrt(cz_sq)
-
-    cart_x = x * ax + y * bx + z * cx
-    cart_y = x * ay + y * by + z * cy
-    cart_z = x * az + y * bz + z * cz
-    return cart_x, cart_y, cart_z
-
-
-def _build_rdkit_mol_from_cif(
-    cif_path: Path,
-    *,
-    ligand_id: str,
-    charge: int,
-) -> tuple[Chem.Mol, str, str]:
-    cell, atoms_all, bonds_all = _load_cif_atoms_and_bonds(cif_path)
-    keep_labels = _largest_component_labels(atoms_all, bonds_all)
-    atoms = [atom for atom in atoms_all if atom.label in keep_labels]
-    bonds = [bond for bond in bonds_all if bond.atom1 in keep_labels and bond.atom2 in keep_labels]
-    if not atoms:
-        raise RuntimeError(f"No atoms selected from {cif_path}")
-
-    rw = Chem.RWMol()
-    label_to_idx: dict[str, int] = {}
-    conf = Chem.Conformer(len(atoms))
-    for idx, atom_site in enumerate(atoms):
-        atom = Chem.Atom(atom_site.element)
-        atom.SetProp("cif_label", atom_site.label)
-        label_to_idx[atom_site.label] = idx
-        rw_idx = rw.AddAtom(atom)
-        if rw_idx != idx:
-            raise RuntimeError("Atom index mismatch while building RDKit molecule")
-        x, y, z = _fractional_to_cartesian(cell, atom_site.fract_x, atom_site.fract_y, atom_site.fract_z)
-        conf.SetAtomPosition(idx, Point3D(float(x), float(y), float(z)))
-
-    for bond in bonds:
-        a1 = label_to_idx[bond.atom1]
-        a2 = label_to_idx[bond.atom2]
-        rw.AddBond(a1, a2, Chem.BondType.SINGLE)
-
-    mol = rw.GetMol()
-    conf.Set3D(True)
-    mol.AddConformer(conf)
-
-    try:
-        rdDetermineBonds.DetermineBondOrders(mol, charge=charge)
-    except Exception as exc:
-        raise RuntimeError(f"RDKit DetermineBondOrders failed: {exc}") from exc
+def _load_input_sdf(input_sdf: Path, *, ligand_id: str) -> tuple[Chem.Mol, str, str]:
+    supplier = Chem.SDMolSupplier(str(input_sdf), removeHs=False, sanitize=False)
+    mol = next((mol for mol in supplier if mol is not None), None)
+    if mol is None:
+        raise RuntimeError(f"Could not read any molecule from {input_sdf}")
 
     try:
         Chem.SanitizeMol(mol)
     except Exception as exc:
-        raise RuntimeError(f"RDKit sanitize failed after CIF conversion: {exc}") from exc
+        raise RuntimeError(f"RDKit sanitize failed for {input_sdf}: {exc}") from exc
 
     mol.SetProp("_Name", ligand_id)
     mol.SetProp("ligand_id", ligand_id)
-    mol.SetProp("source_file", str(cif_path))
+    mol.SetProp("source_file", str(input_sdf))
 
-    explicit_h_smiles = Chem.MolToSmiles(Chem.Mol(mol), canonical=True)
-    key_h_smiles = Chem.MolToSmiles(Chem.RemoveHs(Chem.Mol(mol)), canonical=True)
-    return mol, explicit_h_smiles, key_h_smiles
+    smiles_explicit_h = Chem.MolToSmiles(Chem.Mol(mol), canonical=True)
+    smiles_key_h = Chem.MolToSmiles(Chem.RemoveHs(Chem.Mol(mol)), canonical=True)
+    return mol, smiles_explicit_h, smiles_key_h
 
 
 def _write_sdf(path: Path, mol: Chem.Mol) -> None:
+    ensure_dir(path.parent)
     writer = Chem.SDWriter(str(path))
     writer.write(mol)
     writer.close()
@@ -310,6 +87,7 @@ def _build_unimol_cmd(cfg: DockingPipelineConfig, *, batch_csv: Path, out_dir: P
     demo_py = Path(cfg.unimol.repo_dir) / "interface" / "demo.py"
     if not demo_py.exists():
         raise FileNotFoundError(demo_py)
+
     cmd: list[str] = [
         "conda",
         "run",
@@ -379,6 +157,7 @@ def _build_gnina_cmd(cfg: DockingPipelineConfig, *, input_sdf: Path, output_sdf:
     executable = str(local_bin) if local_bin.exists() else cfg.gnina.executable
     cx, cy, cz = cfg.inputs.docking_box.center
     sx, sy, sz = cfg.inputs.docking_box.size
+
     cmd = [
         executable,
         "-r",
@@ -438,39 +217,33 @@ def _parse_gnina_out_sdf(path: Path) -> dict[str, object]:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=(
-            "Convert a small-molecule CCDC CIF into an SDF using its crystal coordinates, "
-            "then rescore it with Uni-Mol and gnina against the pocket defined in a pipeline config."
+            "Read a single ligand SDF, then rescore it with Uni-Mol and gnina "
+            "against the pocket defined in a pipeline config."
         )
     )
     ap.add_argument("--config", type=Path, required=True, help="RNaseL pipeline config or run.yaml.")
-    ap.add_argument("--input-cif", type=Path, default=Path("dirty-task/compare_with_disney/1912054.cif"))
+    ap.add_argument("--input-sdf", type=Path, default=Path("dirty-task/compare_with_disney/1912054.sdf"))
     ap.add_argument("--output-dir", type=Path, default=Path("dirty-task/compare_with_disney/unimol_gnina_rescore_1912054"))
     ap.add_argument("--ligand-id", default="1912054")
-    ap.add_argument("--charge", type=int, default=0, help="Formal charge passed to RDKit bond-order perception.")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
     cfg = _load_cfg(args.config)
-    input_cif = args.input_cif.resolve()
+    input_sdf = args.input_sdf.resolve()
     output_dir = args.output_dir.resolve()
     ensure_dir(output_dir)
     ensure_dir(output_dir / "logs")
 
-    mol, smiles_explicit_h, smiles_key_h = _build_rdkit_mol_from_cif(
-        input_cif,
-        ligand_id=args.ligand_id,
-        charge=args.charge,
-    )
+    mol, smiles_explicit_h, smiles_key_h = _load_input_sdf(input_sdf, ligand_id=args.ligand_id)
 
     ligand_sdf = output_dir / "input_ligands" / f"{args.ligand_id}.sdf"
     if args.force or not ligand_sdf.exists():
-        ensure_dir(ligand_sdf.parent)
         _write_sdf(ligand_sdf, mol)
 
     prep_rows = [
         {
             "ligand_id": args.ligand_id,
-            "input_cif": str(input_cif),
+            "input_sdf_source": str(input_sdf),
             "input_sdf": str(ligand_sdf),
             "status": "ok",
             "smiles_explicit_h": smiles_explicit_h,
@@ -481,12 +254,11 @@ def main() -> int:
     write_csv(
         output_dir / "prep_summary.csv",
         prep_rows,
-        fieldnames=["ligand_id", "input_cif", "input_sdf", "status", "smiles_explicit_h", "smiles_key_h", "error"],
+        fieldnames=["ligand_id", "input_sdf_source", "input_sdf", "status", "smiles_explicit_h", "smiles_key_h", "error"],
     )
 
     docking_grid_json = _write_docking_grid_json(cfg, out_dir=output_dir)
     chunk_dir = output_dir / "unimol" / "chunks" / "chunk_0"
-    ensure_dir(chunk_dir)
     out_sdf_dir = chunk_dir / "out_sdf"
     ensure_dir(out_sdf_dir)
     batch_csv = chunk_dir / "batch.csv"
@@ -502,16 +274,14 @@ def main() -> int:
         fieldnames=["input_ligand", "input_docking_grid", "output_ligand_name"],
     )
 
-    if args.force:
-        unimol_out = out_sdf_dir / f"{args.ligand_id}.sdf"
-        if unimol_out.exists():
-            unimol_out.unlink()
+    unimol_out = out_sdf_dir / f"{args.ligand_id}.sdf"
+    if args.force and unimol_out.exists():
+        unimol_out.unlink()
 
     unimol_cmd = _build_unimol_cmd(cfg, batch_csv=batch_csv, out_dir=out_sdf_dir)
     unimol_proc = subprocess.run(unimol_cmd, text=True, capture_output=True)
     _write_run_log(output_dir / "logs" / "unimol.log", cmd=unimol_cmd, proc=unimol_proc)
 
-    unimol_out = out_sdf_dir / f"{args.ligand_id}.sdf"
     unimol_status = "ok" if unimol_proc.returncode == 0 and unimol_out.exists() else "failed"
     unimol_error = ""
     if unimol_status != "ok":
@@ -545,25 +315,25 @@ def main() -> int:
             "error": "unimol_failed",
         }
     else:
-        input_sdf = gnina_dir / "input.sdf"
-        output_sdf = gnina_dir / "gnina_out.sdf"
+        gnina_input_sdf = gnina_dir / "input.sdf"
+        gnina_output_sdf = gnina_dir / "gnina_out.sdf"
         block = _ensure_ligand_id_props(_first_mol_block_text(unimol_out), ligand_id=args.ligand_id)
-        input_sdf.write_text(block if block.rstrip().endswith("$$$$") else block + "$$$$\n", encoding="utf-8")
-        if args.force and output_sdf.exists():
-            output_sdf.unlink()
+        gnina_input_sdf.write_text(block if block.rstrip().endswith("$$$$") else block + "$$$$\n", encoding="utf-8")
+        if args.force and gnina_output_sdf.exists():
+            gnina_output_sdf.unlink()
 
-        gnina_cmd = _build_gnina_cmd(cfg, input_sdf=input_sdf, output_sdf=output_sdf)
+        gnina_cmd = _build_gnina_cmd(cfg, input_sdf=gnina_input_sdf, output_sdf=gnina_output_sdf)
         gnina_proc = subprocess.run(gnina_cmd, text=True, capture_output=True)
         _write_run_log(output_dir / "logs" / "gnina.log", cmd=gnina_cmd, proc=gnina_proc)
 
-        parsed = _parse_gnina_out_sdf(output_sdf) if gnina_proc.returncode == 0 else {}
+        parsed = _parse_gnina_out_sdf(gnina_output_sdf) if gnina_proc.returncode == 0 else {}
         gnina_row = {
             "ligand_id": args.ligand_id,
             "status": "ok" if parsed else "failed",
             "minimizedAffinity": parsed.get("minimizedAffinity"),
             "CNNscore": parsed.get("CNNscore"),
             "CNNaffinity": parsed.get("CNNaffinity"),
-            "gnina_out_sdf": str(output_sdf) if parsed else "",
+            "gnina_out_sdf": str(gnina_output_sdf) if parsed else "",
             "error": "" if parsed else (_tail_text(gnina_proc.stderr) or _tail_text(gnina_proc.stdout) or f"gnina returncode={gnina_proc.returncode}"),
         }
 
@@ -575,7 +345,7 @@ def main() -> int:
 
     final_row = {
         "ligand_id": args.ligand_id,
-        "input_cif": str(input_cif),
+        "input_sdf_source": str(input_sdf),
         "input_sdf": str(ligand_sdf),
         "smiles_explicit_h": smiles_explicit_h,
         "smiles_key_h": smiles_key_h,
@@ -589,13 +359,13 @@ def main() -> int:
         "CNNscore": gnina_row.get("CNNscore"),
         "CNNaffinity": gnina_row.get("CNNaffinity"),
     }
-    final_csv = output_dir / "final" / "rescored_from_cif.csv"
+    final_csv = output_dir / "final" / "rescored_from_sdf.csv"
     write_csv(
         final_csv,
         [final_row],
         fieldnames=[
             "ligand_id",
-            "input_cif",
+            "input_sdf_source",
             "input_sdf",
             "smiles_explicit_h",
             "smiles_key_h",
@@ -611,9 +381,9 @@ def main() -> int:
         ],
     )
 
-    print(f"Input CIF: {input_cif}")
+    print(f"Input SDF: {input_sdf}")
     print(f"Output dir: {output_dir}")
-    print(f"Input SDF: {ligand_sdf}")
+    print(f"Normalized input SDF: {ligand_sdf}")
     print(f"Final CSV: {final_csv}")
     return 0
 
