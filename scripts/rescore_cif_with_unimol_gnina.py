@@ -37,6 +37,30 @@ def _load_input_sdf(input_sdf: Path, *, ligand_id: str) -> tuple[Chem.Mol, str, 
     return mol, smiles_explicit_h, smiles_key_h
 
 
+def _parse_gnina_out_sdf(path: Path) -> dict[str, dict[str, object]]:
+    rows: dict[str, dict[str, object]] = {}
+    if not path.exists():
+        return rows
+    supplier = Chem.SDMolSupplier(str(path), removeHs=False, sanitize=False)
+    for mol in supplier:
+        if mol is None:
+            continue
+        ligand_id = ""
+        if mol.HasProp("ligand_id"):
+            ligand_id = mol.GetProp("ligand_id")
+        elif mol.HasProp("_Name"):
+            ligand_id = mol.GetProp("_Name")
+        if not ligand_id:
+            continue
+        rows[ligand_id] = {
+            "ligand_id": ligand_id,
+            "minimizedAffinity": safe_float(mol.GetProp("minimizedAffinity") if mol.HasProp("minimizedAffinity") else None),
+            "CNNscore": safe_float(mol.GetProp("CNNscore") if mol.HasProp("CNNscore") else None),
+            "CNNaffinity": safe_float(mol.GetProp("CNNaffinity") if mol.HasProp("CNNaffinity") else None),
+        }
+    return rows
+
+
 def _write_sdf(path: Path, mol: Chem.Mol) -> None:
     ensure_dir(path.parent)
     writer = Chem.SDWriter(str(path))
@@ -191,66 +215,51 @@ def _build_gnina_cmd(cfg: DockingPipelineConfig, *, input_sdf: Path, output_sdf:
     return cmd
 
 
-def _parse_gnina_out_sdf(path: Path) -> dict[str, object]:
-    if not path.exists():
-        return {}
-    supplier = Chem.SDMolSupplier(str(path), removeHs=False, sanitize=False)
-    for mol in supplier:
-        if mol is None:
-            continue
-        ligand_id = ""
-        if mol.HasProp("ligand_id"):
-            ligand_id = mol.GetProp("ligand_id")
-        elif mol.HasProp("_Name"):
-            ligand_id = mol.GetProp("_Name")
-        if not ligand_id:
-            continue
-        return {
-            "ligand_id": ligand_id,
-            "minimizedAffinity": safe_float(mol.GetProp("minimizedAffinity") if mol.HasProp("minimizedAffinity") else None),
-            "CNNscore": safe_float(mol.GetProp("CNNscore") if mol.HasProp("CNNscore") else None),
-            "CNNaffinity": safe_float(mol.GetProp("CNNaffinity") if mol.HasProp("CNNaffinity") else None),
-        }
-    return {}
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=(
-            "Read a single ligand SDF, then rescore it with Uni-Mol and gnina "
+            "Read one or more ligand SDFs, then rescore them with Uni-Mol and gnina "
             "against the pocket defined in a pipeline config."
         )
     )
     ap.add_argument("--config", type=Path, required=True, help="RNaseL pipeline config or run.yaml.")
-    ap.add_argument("--input-sdf", type=Path, default=Path("dirty-task/compare_with_disney/1912054.sdf"))
+    ap.add_argument("--input-sdf", type=Path, action="append", default=None, help="Repeatable. One input SDF per ligand.")
     ap.add_argument("--output-dir", type=Path, default=Path("dirty-task/compare_with_disney/unimol_gnina_rescore_1912054"))
-    ap.add_argument("--ligand-id", default="1912054")
+    ap.add_argument("--ligand-id", action="append", default=None, help="Repeatable. Must match the number/order of --input-sdf values.")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
     cfg = _load_cfg(args.config)
-    input_sdf = args.input_sdf.resolve()
+    input_sdfs = [p.resolve() for p in (args.input_sdf or [Path("dirty-task/compare_with_disney/1912054.sdf")])]
+    ligand_ids = list(args.ligand_id or [])
+    if ligand_ids:
+        if len(ligand_ids) != len(input_sdfs):
+            raise ValueError("--ligand-id count must match --input-sdf count")
+    else:
+        ligand_ids = [p.stem for p in input_sdfs]
     output_dir = args.output_dir.resolve()
     ensure_dir(output_dir)
     ensure_dir(output_dir / "logs")
 
-    mol, smiles_explicit_h, smiles_key_h = _load_input_sdf(input_sdf, ligand_id=args.ligand_id)
-
-    ligand_sdf = output_dir / "input_ligands" / f"{args.ligand_id}.sdf"
-    if args.force or not ligand_sdf.exists():
-        _write_sdf(ligand_sdf, mol)
-
-    prep_rows = [
-        {
-            "ligand_id": args.ligand_id,
-            "input_sdf_source": str(input_sdf),
-            "input_sdf": str(ligand_sdf),
-            "status": "ok",
-            "smiles_explicit_h": smiles_explicit_h,
-            "smiles_key_h": smiles_key_h,
-            "error": "",
-        }
-    ]
+    prep_rows: list[dict[str, object]] = []
+    normalized_sdf_by_ligand: dict[str, Path] = {}
+    for input_sdf, ligand_id in zip(input_sdfs, ligand_ids):
+        mol, smiles_explicit_h, smiles_key_h = _load_input_sdf(input_sdf, ligand_id=ligand_id)
+        ligand_sdf = output_dir / "input_ligands" / f"{ligand_id}.sdf"
+        if args.force or not ligand_sdf.exists():
+            _write_sdf(ligand_sdf, mol)
+        normalized_sdf_by_ligand[ligand_id] = ligand_sdf
+        prep_rows.append(
+            {
+                "ligand_id": ligand_id,
+                "input_sdf_source": str(input_sdf),
+                "input_sdf": str(ligand_sdf),
+                "status": "ok",
+                "smiles_explicit_h": smiles_explicit_h,
+                "smiles_key_h": smiles_key_h,
+                "error": "",
+            }
+        )
     write_csv(
         output_dir / "prep_summary.csv",
         prep_rows,
@@ -266,59 +275,74 @@ def main() -> int:
         batch_csv,
         [
             {
-                "input_ligand": str(ligand_sdf),
+                "input_ligand": str(normalized_sdf_by_ligand[ligand_id]),
                 "input_docking_grid": str(docking_grid_json),
-                "output_ligand_name": args.ligand_id,
+                "output_ligand_name": ligand_id,
             }
+            for ligand_id in ligand_ids
         ],
         fieldnames=["input_ligand", "input_docking_grid", "output_ligand_name"],
     )
 
-    unimol_out = out_sdf_dir / f"{args.ligand_id}.sdf"
-    if args.force and unimol_out.exists():
-        unimol_out.unlink()
+    if args.force:
+        for ligand_id in ligand_ids:
+            unimol_out = out_sdf_dir / f"{ligand_id}.sdf"
+            if unimol_out.exists():
+                unimol_out.unlink()
 
     unimol_cmd = _build_unimol_cmd(cfg, batch_csv=batch_csv, out_dir=out_sdf_dir)
     unimol_proc = subprocess.run(unimol_cmd, text=True, capture_output=True)
     _write_run_log(output_dir / "logs" / "unimol.log", cmd=unimol_cmd, proc=unimol_proc)
 
-    unimol_status = "ok" if unimol_proc.returncode == 0 and unimol_out.exists() else "failed"
-    unimol_error = ""
-    if unimol_status != "ok":
-        unimol_error = _tail_text(unimol_proc.stderr) or _tail_text(unimol_proc.stdout) or f"unimol returncode={unimol_proc.returncode}"
-
-    write_csv(
-        chunk_dir / "unimol_summary.csv",
-        [
+    unimol_summary_rows: list[dict[str, object]] = []
+    prep_by_ligand = {str(row["ligand_id"]): row for row in prep_rows}
+    for ligand_id in ligand_ids:
+        unimol_out = out_sdf_dir / f"{ligand_id}.sdf"
+        unimol_status = "ok" if unimol_proc.returncode == 0 and unimol_out.exists() else "failed"
+        unimol_error = ""
+        if unimol_status != "ok":
+            unimol_error = _tail_text(unimol_proc.stderr) or _tail_text(unimol_proc.stdout) or f"unimol returncode={unimol_proc.returncode}"
+        unimol_summary_rows.append(
             {
-                "ligand_id": args.ligand_id,
+                "ligand_id": ligand_id,
                 "status": unimol_status,
                 "output_sdf": str(unimol_out) if unimol_out.exists() else "",
                 "error": unimol_error,
             }
-        ],
+        )
+
+    write_csv(
+        chunk_dir / "unimol_summary.csv",
+        unimol_summary_rows,
         fieldnames=["ligand_id", "status", "output_sdf", "error"],
     )
 
     gnina_dir = output_dir / "gnina" / "chunks" / "chunk_0"
     ensure_dir(gnina_dir)
     gnina_summary_path = gnina_dir / "summary.csv"
-    gnina_row: dict[str, object]
-    if unimol_status != "ok":
-        gnina_row = {
-            "ligand_id": args.ligand_id,
-            "status": "skipped",
-            "minimizedAffinity": None,
-            "CNNscore": None,
-            "CNNaffinity": None,
-            "gnina_out_sdf": "",
-            "error": "unimol_failed",
-        }
+    gnina_rows: list[dict[str, object]] = []
+    unimol_ok_rows = [row for row in unimol_summary_rows if row["status"] == "ok" and row["output_sdf"]]
+    if not unimol_ok_rows:
+        for ligand_id in ligand_ids:
+            gnina_rows.append(
+                {
+                    "ligand_id": ligand_id,
+                    "status": "skipped",
+                    "minimizedAffinity": None,
+                    "CNNscore": None,
+                    "CNNaffinity": None,
+                    "gnina_out_sdf": "",
+                    "error": "unimol_failed",
+                }
+            )
     else:
         gnina_input_sdf = gnina_dir / "input.sdf"
         gnina_output_sdf = gnina_dir / "gnina_out.sdf"
-        block = _ensure_ligand_id_props(_first_mol_block_text(unimol_out), ligand_id=args.ligand_id)
-        gnina_input_sdf.write_text(block if block.rstrip().endswith("$$$$") else block + "$$$$\n", encoding="utf-8")
+        with gnina_input_sdf.open("w", encoding="utf-8") as f:
+            for row in unimol_ok_rows:
+                ligand_id = str(row["ligand_id"])
+                block = _ensure_ligand_id_props(_first_mol_block_text(Path(str(row["output_sdf"]))), ligand_id=ligand_id)
+                f.write(block if block.rstrip().endswith("$$$$") else block + "$$$$\n")
         if args.force and gnina_output_sdf.exists():
             gnina_output_sdf.unlink()
 
@@ -326,43 +350,69 @@ def main() -> int:
         gnina_proc = subprocess.run(gnina_cmd, text=True, capture_output=True)
         _write_run_log(output_dir / "logs" / "gnina.log", cmd=gnina_cmd, proc=gnina_proc)
 
-        parsed = _parse_gnina_out_sdf(gnina_output_sdf) if gnina_proc.returncode == 0 else {}
-        gnina_row = {
-            "ligand_id": args.ligand_id,
-            "status": "ok" if parsed else "failed",
-            "minimizedAffinity": parsed.get("minimizedAffinity"),
-            "CNNscore": parsed.get("CNNscore"),
-            "CNNaffinity": parsed.get("CNNaffinity"),
-            "gnina_out_sdf": str(gnina_output_sdf) if parsed else "",
-            "error": "" if parsed else (_tail_text(gnina_proc.stderr) or _tail_text(gnina_proc.stdout) or f"gnina returncode={gnina_proc.returncode}"),
-        }
+        parsed_map = _parse_gnina_out_sdf(gnina_output_sdf) if gnina_proc.returncode == 0 else {}
+        for ligand_id in ligand_ids:
+            parsed = parsed_map.get(ligand_id, {})
+            if any(row["ligand_id"] == ligand_id for row in unimol_ok_rows):
+                gnina_rows.append(
+                    {
+                        "ligand_id": ligand_id,
+                        "status": "ok" if parsed else "failed",
+                        "minimizedAffinity": parsed.get("minimizedAffinity"),
+                        "CNNscore": parsed.get("CNNscore"),
+                        "CNNaffinity": parsed.get("CNNaffinity"),
+                        "gnina_out_sdf": str(gnina_output_sdf) if parsed else "",
+                        "error": "" if parsed else (_tail_text(gnina_proc.stderr) or _tail_text(gnina_proc.stdout) or f"gnina returncode={gnina_proc.returncode}"),
+                    }
+                )
+            else:
+                gnina_rows.append(
+                    {
+                        "ligand_id": ligand_id,
+                        "status": "skipped",
+                        "minimizedAffinity": None,
+                        "CNNscore": None,
+                        "CNNaffinity": None,
+                        "gnina_out_sdf": "",
+                        "error": "unimol_failed",
+                    }
+                )
 
     write_csv(
         gnina_summary_path,
-        [gnina_row],
+        gnina_rows,
         fieldnames=["ligand_id", "status", "minimizedAffinity", "CNNscore", "CNNaffinity", "gnina_out_sdf", "error"],
     )
 
-    final_row = {
-        "ligand_id": args.ligand_id,
-        "input_sdf_source": str(input_sdf),
-        "input_sdf": str(ligand_sdf),
-        "smiles_explicit_h": smiles_explicit_h,
-        "smiles_key_h": smiles_key_h,
-        "unimol_status": unimol_status,
-        "unimol_output_sdf": str(unimol_out) if unimol_out.exists() else "",
-        "unimol_error": unimol_error,
-        "gnina_status": gnina_row.get("status", ""),
-        "gnina_output_sdf": gnina_row.get("gnina_out_sdf", ""),
-        "gnina_error": gnina_row.get("error", ""),
-        "minimizedAffinity": gnina_row.get("minimizedAffinity"),
-        "CNNscore": gnina_row.get("CNNscore"),
-        "CNNaffinity": gnina_row.get("CNNaffinity"),
-    }
+    unimol_by_ligand = {str(row["ligand_id"]): row for row in unimol_summary_rows}
+    gnina_by_ligand = {str(row["ligand_id"]): row for row in gnina_rows}
+    final_rows: list[dict[str, object]] = []
+    for ligand_id in ligand_ids:
+        prep = prep_by_ligand[ligand_id]
+        unimol = unimol_by_ligand[ligand_id]
+        gnina = gnina_by_ligand[ligand_id]
+        final_rows.append(
+            {
+                "ligand_id": ligand_id,
+                "input_sdf_source": prep.get("input_sdf_source", ""),
+                "input_sdf": prep.get("input_sdf", ""),
+                "smiles_explicit_h": prep.get("smiles_explicit_h", ""),
+                "smiles_key_h": prep.get("smiles_key_h", ""),
+                "unimol_status": unimol.get("status", ""),
+                "unimol_output_sdf": unimol.get("output_sdf", ""),
+                "unimol_error": unimol.get("error", ""),
+                "gnina_status": gnina.get("status", ""),
+                "gnina_output_sdf": gnina.get("gnina_out_sdf", ""),
+                "gnina_error": gnina.get("error", ""),
+                "minimizedAffinity": gnina.get("minimizedAffinity"),
+                "CNNscore": gnina.get("CNNscore"),
+                "CNNaffinity": gnina.get("CNNaffinity"),
+            }
+        )
     final_csv = output_dir / "final" / "rescored_from_sdf.csv"
     write_csv(
         final_csv,
-        [final_row],
+        final_rows,
         fieldnames=[
             "ligand_id",
             "input_sdf_source",
@@ -381,9 +431,9 @@ def main() -> int:
         ],
     )
 
-    print(f"Input SDF: {input_sdf}")
+    print(f"Input SDFs: {', '.join(str(p) for p in input_sdfs)}")
     print(f"Output dir: {output_dir}")
-    print(f"Normalized input SDF: {ligand_sdf}")
+    print(f"Ligands: {', '.join(ligand_ids)}")
     print(f"Final CSV: {final_csv}")
     return 0
 
